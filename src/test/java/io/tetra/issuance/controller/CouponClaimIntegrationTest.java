@@ -1,0 +1,300 @@
+package io.tetra.issuance.controller;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+
+import java.time.Duration;
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.springframework.context.annotation.Import;
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.web.servlet.MockMvc;
+
+import com.jayway.jsonpath.JsonPath;
+
+import io.tetra.issuance.TestcontainersConfiguration;
+import io.tetra.issuance.config.TetraProperties.WarmupMode;
+import io.tetra.issuance.redis.CouponStockStore;
+import io.tetra.issuance.redis.SessionStore;
+import io.tetra.issuance.service.CouponCatalog;
+import jakarta.servlet.http.Cookie;
+
+/** 4-4 쿠폰 목록 · 4-5 claim — 실제 MySQL·Redis·Lua. 시드: 쿠폰 10종, 이벤트 재고 10(당첨 최대 10명, 일괄 발급). */
+@Import(TestcontainersConfiguration.class)
+@SpringBootTest
+@AutoConfigureMockMvc
+class CouponClaimIntegrationTest {
+
+	@Autowired
+	MockMvc mockMvc;
+
+	@Autowired
+	StringRedisTemplate redis;
+
+	@Autowired
+	JdbcTemplate jdbcTemplate;
+
+	@Autowired
+	SessionStore sessionStore;
+
+	@Autowired
+	CouponCatalog catalog;
+
+	@BeforeEach
+	void 재고와_이력을_처음_상태로() {
+		catalog.warmup(WarmupMode.FORCE); // 이벤트 재고 10
+		jdbcTemplate.update("DELETE FROM issuance_history");
+	}
+
+	/** 세션 생성 + 번호표 발급까지 마친 사용자 */
+	record User(String userId, String sid) {
+	}
+
+	User userWithTicket() throws Exception {
+		String userId = "user-" + UUID.randomUUID();
+		String sid = sessionStore.create("poctenant001", 1L, userId, Instant.now(), Duration.ofMinutes(10));
+		mockMvc.perform(post("/api/issuance/events/1/ticket").cookie(new Cookie("TETRA_SID", sid)))
+				.andExpect(status().isOk())
+				.andExpect(header().string("Cache-Control", "no-store"));
+		return new User(userId, sid);
+	}
+
+	String claim(User user) throws Exception {
+		return mockMvc.perform(post("/api/issuance/events/1/coupons/claim").cookie(new Cookie("TETRA_SID", user.sid())))
+				.andReturn().getResponse().getContentAsString();
+	}
+
+	void setStock(long value) {
+		redis.opsForValue().set(CouponStockStore.stockKey(1), Long.toString(value));
+	}
+
+	Map<String, Object> historyOf(String userId) {
+		return jdbcTemplate.queryForMap("SELECT * FROM issuance_history WHERE user_id = ?", userId);
+	}
+
+	// --- 워밍업 · 목록 -----------------------------------------------------------
+
+	@Test
+	void 워밍업_if_absent는_이미_있는_재고를_덮어쓰지_않고_force는_덮어쓴다() {
+		setStock(3);
+		catalog.warmup(WarmupMode.IF_ABSENT);
+		assertThat(redis.opsForValue().get(CouponStockStore.stockKey(1))).isEqualTo("3");
+		catalog.warmup(WarmupMode.FORCE);
+		assertThat(redis.opsForValue().get(CouponStockStore.stockKey(1))).isEqualTo("10");
+	}
+
+	@Test
+	void 쿠폰_목록은_10종이고_잔여_수량은_Redis_이벤트_재고() throws Exception {
+		User user = userWithTicket();
+		setStock(4);
+
+		mockMvc.perform(get("/api/issuance/events/1/coupons").cookie(new Cookie("TETRA_SID", user.sid())))
+				.andExpect(status().isOk())
+				.andExpect(header().string("Cache-Control", "no-store"))
+				.andExpect(jsonPath("$.data.coupons.length()").value(10))
+				.andExpect(jsonPath("$.data.coupons[0].couponId").value(1))
+				.andExpect(jsonPath("$.data.coupons[0].name").value("PoC 쿠폰 1"))
+				.andExpect(jsonPath("$.data.coupons[0].description").value("PoC 쿠폰입니다."))
+				.andExpect(jsonPath("$.data.coupons[0].remaining").value(4))
+				.andExpect(jsonPath("$.data.coupons[9].remaining").value(4)); // 이벤트 재고라 모든 쿠폰이 같은 값
+		assertThat(jdbcTemplate.queryForObject("SELECT stock_count FROM event WHERE event_id = 1", Integer.class))
+				.isEqualTo(10); // MySQL 은 신청 시점 값 그대로
+	}
+
+	// --- claim ---------------------------------------------------------------
+
+	@Test
+	void 재고가_있으면_쿠폰을_모두_발급하고_재고를_1_차감하고_이력_SUCCESS_1행() throws Exception {
+		User user = userWithTicket();
+		String body = claim(user);
+
+		assertThat((String) JsonPath.read(body, "$.data.result")).isEqualTo("SUCCESS");
+		assertThat((List<?>) JsonPath.read(body, "$.data.coupons")).hasSize(10);
+		assertThat((String) JsonPath.read(body, "$.data.coupons[0].name")).isEqualTo("PoC 쿠폰 1");
+		assertThat(redis.opsForValue().get(CouponStockStore.stockKey(1))).isEqualTo("9");
+
+		Map<String, Object> row = historyOf(user.userId());
+		assertThat(row.get("result")).isEqualTo("SUCCESS");
+		assertThat(row.get("tenant_id")).isEqualTo("poctenant001");
+		assertThat(row.get("ticket_number")).isNotNull();
+		assertThat(row.get("session_issued_at")).isNotNull();
+		assertThat(row.get("queue_entered_at")).isNotNull();
+		assertThat(row.get("issued_at")).isNotNull();
+		assertThat(String.valueOf(row.get("ticket_number")))
+				.isEqualTo(redis.opsForHash().get("session:" + user.sid(), "ticket_number"));
+	}
+
+	@Test
+	void 재고가_1이면_첫_사용자는_쿠폰을_모두_받고_다음_사용자는_품절() throws Exception {
+		setStock(1);
+		String first = claim(userWithTicket());
+		String second = claim(userWithTicket());
+
+		assertThat((String) JsonPath.read(first, "$.data.result")).isEqualTo("SUCCESS");
+		assertThat((List<?>) JsonPath.read(first, "$.data.coupons")).hasSize(10);
+		assertThat((String) JsonPath.read(second, "$.data.result")).isEqualTo("SOLD_OUT");
+		assertThat(redis.opsForValue().get(CouponStockStore.stockKey(1))).isEqualTo("0");
+	}
+
+	@Test
+	void 모두_소진됐으면_200_SOLD_OUT이고_이력_FAILED_SOLDOUT() throws Exception {
+		setStock(0);
+		User user = userWithTicket();
+
+		mockMvc.perform(post("/api/issuance/events/1/coupons/claim").cookie(new Cookie("TETRA_SID", user.sid())))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$.success").value(true))
+				.andExpect(jsonPath("$.data.result").value("SOLD_OUT"))
+				.andExpect(jsonPath("$.data.coupons.length()").value(0));
+		assertThat(historyOf(user.userId()).get("result")).isEqualTo("FAILED_SOLDOUT");
+		assertThat(redis.opsForValue().get(CouponStockStore.stockKey(1))).isEqualTo("0"); // 음수 안 됨
+	}
+
+	@Test
+	void 같은_사용자가_다시_claim하면_처음_결과를_그대로_돌려주고_재고와_이력이_늘지_않는다() throws Exception {
+		User user = userWithTicket();
+		String first = claim(user);
+
+		String second = mockMvc.perform(post("/api/issuance/events/1/coupons/claim").cookie(new Cookie("TETRA_SID", user.sid())))
+				.andExpect(status().isOk())
+				.andExpect(header().string("Cache-Control", "no-store"))
+				.andReturn().getResponse().getContentAsString();
+		assertThat((Object) JsonPath.read(second, "$.data")).isEqualTo(JsonPath.read(first, "$.data"));
+		assertThat((String) JsonPath.read(second, "$.data.result")).isEqualTo("SUCCESS");
+		assertThat(redis.opsForValue().get(CouponStockStore.stockKey(1))).isEqualTo("9");
+		assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM issuance_history WHERE user_id = ?",
+				Integer.class, user.userId())).isEqualTo(1);
+	}
+
+	@Test
+	void 품절로_처리된_사용자가_다시_claim하면_SOLD_OUT을_그대로_돌려준다() throws Exception {
+		setStock(0);
+		User user = userWithTicket();
+		claim(user);
+		setStock(5); // 그 사이 재고가 생겨도 처음 결과(품절)는 바뀌지 않는다
+
+		mockMvc.perform(post("/api/issuance/events/1/coupons/claim").cookie(new Cookie("TETRA_SID", user.sid())))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$.data.result").value("SOLD_OUT"))
+				.andExpect(jsonPath("$.data.coupons.length()").value(0));
+		assertThat(redis.opsForValue().get(CouponStockStore.stockKey(1))).isEqualTo("5");
+	}
+
+	@Test
+	void 다시_claim하면_빠진_이력을_채운다() throws Exception {
+		User user = userWithTicket();
+		claim(user);
+		jdbcTemplate.update("DELETE FROM issuance_history WHERE user_id = ?", user.userId()); // 처음 INSERT 실패 흉내
+
+		claim(user);
+		assertThat(historyOf(user.userId()).get("result")).isEqualTo("SUCCESS");
+	}
+
+	@Test
+	void 번호표_없이_claim하면_409이고_아무것도_바뀌지_않는다() throws Exception {
+		String userId = "user-" + UUID.randomUUID();
+		String sid = sessionStore.create("poctenant001", 1L, userId, Instant.now(), Duration.ofMinutes(10));
+
+		mockMvc.perform(post("/api/issuance/events/1/coupons/claim").cookie(new Cookie("TETRA_SID", sid)))
+				.andExpect(status().isConflict())
+				.andExpect(jsonPath("$.error.code").value("TICKET_REQUIRED"));
+		assertThat(redis.hasKey(CouponStockStore.claimDoneKey(1, userId))).isFalse();
+		assertThat(redis.opsForValue().get(CouponStockStore.stockKey(1))).isEqualTo("10");
+		assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM issuance_history", Integer.class)).isZero();
+	}
+
+	@Test
+	void 이력이_이미_있으면_중복_키_오류를_무시하고_정상_응답() throws Exception {
+		User user = userWithTicket();
+		jdbcTemplate.update("INSERT INTO issuance_history (tenant_id, event_id, user_id, ticket_number, session_issued_at, "
+				+ "queue_entered_at, issued_at, result) VALUES ('poctenant001', 1, ?, 1, NOW(3), NOW(3), NOW(3), 'SUCCESS')",
+				user.userId()); // claim:done 유실 상황 흉내
+
+		String body = claim(user);
+		assertThat((String) JsonPath.read(body, "$.data.result")).isEqualTo("SUCCESS");
+		assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM issuance_history WHERE user_id = ?",
+				Integer.class, user.userId())).isEqualTo(1);
+	}
+
+	@Test
+	void claim을_처리받은_사용자는_번호표를_다시_받을_수_없고_번호도_소모되지_않는다() throws Exception {
+		User user = userWithTicket();
+		claim(user);
+		long seqBefore = Long.parseLong(redis.opsForValue().get("ticket:seq:1"));
+
+		mockMvc.perform(post("/api/issuance/events/1/ticket").cookie(new Cookie("TETRA_SID", user.sid())))
+				.andExpect(status().isConflict())
+				.andExpect(jsonPath("$.error.code").value("ALREADY_CLAIMED"));
+		assertThat(Long.parseLong(redis.opsForValue().get("ticket:seq:1"))).isEqualTo(seqBefore);
+	}
+
+	@Test
+	void 품절로_처리된_사용자도_번호표를_다시_받을_수_없다() throws Exception {
+		setStock(0);
+		User user = userWithTicket();
+		claim(user);
+
+		mockMvc.perform(post("/api/issuance/events/1/ticket").cookie(new Cookie("TETRA_SID", user.sid())))
+				.andExpect(status().isConflict())
+				.andExpect(jsonPath("$.error.code").value("ALREADY_CLAIMED"));
+	}
+
+	@Test
+	void claim_후에도_쿠폰_목록은_정상으로_조회된다() throws Exception {
+		User user = userWithTicket();
+		claim(user);
+
+		mockMvc.perform(get("/api/issuance/events/1/coupons").cookie(new Cookie("TETRA_SID", user.sid())))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$.data.coupons[0].remaining").value(9));
+	}
+
+	@Test
+	void 동시에_150명이_claim해도_초과_발급이_없다() throws Exception {
+		List<User> users = new ArrayList<>();
+		for (int i = 0; i < 150; i++) {
+			users.add(userWithTicket());
+		}
+		ExecutorService pool = Executors.newFixedThreadPool(32);
+		List<String> results = new ArrayList<>();
+		try {
+			List<Callable<String>> calls = users.stream().<Callable<String>>map(u -> () -> {
+				String body = claim(u);
+				return (String) JsonPath.read(body, "$.data.result");
+			}).toList();
+			for (Future<String> f : pool.invokeAll(calls)) {
+				results.add(f.get());
+			}
+		}
+		finally {
+			pool.shutdown();
+		}
+
+		// 이벤트 재고 10, 한 사람이 1 차감(쿠폰은 전부) → 정확히 10명 성공, 140명 품절
+		assertThat(results.stream().filter("SUCCESS"::equals).count()).isEqualTo(10);
+		assertThat(results.stream().filter("SOLD_OUT"::equals).count()).isEqualTo(140);
+		assertThat(redis.opsForValue().get(CouponStockStore.stockKey(1))).isEqualTo("0");
+		assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM issuance_history", Integer.class)).isEqualTo(150);
+		assertThat(jdbcTemplate.queryForObject(
+				"SELECT COUNT(*) FROM issuance_history WHERE result = 'SUCCESS'", Integer.class)).isEqualTo(10);
+	}
+
+}

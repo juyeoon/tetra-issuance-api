@@ -1,0 +1,54 @@
+# 로컬 개발용 MySQL + Valkey(Redis 호환). 배포 환경에서는 RDS / ElastiCache 를 쓴다.
+# 접속 정보는 values/values-local.yml 과 같은 값을 써야 한다.
+services:
+  mysql:
+    image: mysql:8.4            # RDS와 같은 8.4 (MVP 물리 ERD)
+    container_name: issuance-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: devpassword
+      MYSQL_DATABASE: t_poctenant001   # 앱 계정 tetra 는 이 테넌트 스키마 권한만 받는다 (공용 tetra_platform 은 권한 없음)
+      MYSQL_USER: tetra
+      MYSQL_PASSWORD: tetra
+      TZ: Asia/Seoul            # DB 저장 타임존 KST (PDF 1장)
+    command:
+      - --default-time-zone=+09:00
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+    ports: ["3306:3306"]
+    volumes:
+      - ./db/init:/docker-entrypoint-initdb.d   # 최초 기동(빈 볼륨)일 때만 01 공용 → 02 테넌트 → 03 시드 → 09 테스트 키 순서로 실행
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-pdevpassword"]
+      interval: 5s
+      retries: 20
+
+  valkey:
+    image: valkey/valkey:7.2
+    container_name: issuance-valkey
+    ports: ["6379:6379"]
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 5s
+      retries: 20
+
+  # 앱 컨테이너 (진행 문서 M10). 기본 `docker compose up` 에서는 뜨지 않고 프로필을 줘야 뜬다:
+  #   docker compose --profile app up -d --build --wait
+  # DB만 띄우고 bootRun 으로 개발하는 기존 방식은 그대로 쓸 수 있다 (같은 8080 포트라 둘 중 하나만).
+  issuance-api:
+    profiles: ["app"]
+    build: ..
+    image: tetra/issuance-api:local
+    container_name: issuance-api
+    environment:
+      TETRA_ENV: docker        # values/values-docker.yml (DB·Redis 호스트 = 서비스 이름)
+    ports: ["8080:8080", "8081:8081"]   # 8081 관리 포트(actuator)
+    depends_on:
+      mysql:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  mysql-data:
