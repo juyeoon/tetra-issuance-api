@@ -1,0 +1,130 @@
+# =====================================================================
+# Issuance Service 설정 "구조"
+# ---------------------------------------------------------------------
+# 이 파일에는 값을 직접 쓰지 않고 ${values.*} 참조만 둔다.
+# 실제 값은 values/values-{환경}.yml 에 있다 (Helm values.yaml → 템플릿 관계).
+#   - 환경 선택: 환경변수 TETRA_ENV (기본 local) → values/values-local.yml
+#   - 경로는 실행 위치(저장소 루트) 기준
+# =====================================================================
+spring:
+  application:
+    name: issuance-api
+  config:
+    import: file:./values/values-${TETRA_ENV:local}.yml
+
+  datasource:
+    url: jdbc:mysql://${values.db.host}:${values.db.port}/t_${values.tenant.id}?connectionTimeZone=${values.timezone}&characterEncoding=UTF-8&sslMode=${values.db.ssl-mode}
+    username: ${values.db.username}
+    password: ${values.db.password}
+    hikari:
+      maximum-pool-size: ${values.db.pool-size}
+      minimum-idle: ${values.db.pool-size}   # 커넥션을 미리 다 열어 둔다 — 기동 웜업(A4)과 첫 요청 지연 방지   # Pod 수 상한 = RDS max_connections ÷ 이 값 (인프라 10-3절)
+
+  # 종료 신호를 받으면 새 요청은 받지 않고, 처리 중인 요청을 이 시간까지 기다린 뒤 내려간다 (server.shutdown: graceful)
+  lifecycle:
+    timeout-per-shutdown-phase: ${values.shutdown-timeout}
+
+  jpa:
+    hibernate:
+      ddl-auto: validate          # 테이블은 DB 정의서 DDL로 만든다. 앱은 구조를 바꾸지 않고 엔티티와 맞는지만 검사
+    open-in-view: false           # 요청 끝까지 DB 연결을 붙잡지 않음
+    # 엔티티 시각은 모두 LocalDateTime(DB 의 KST 벽시계 값) — java.sql.Timestamp 를 거치지 않고 그대로 읽고 쓴다.
+    # Timestamp 를 거치면 드라이버가 connectionTimeZone(KST) → JVM 기본 타임존으로 바꿔, JVM 이 UTC 일 때(CI 컨테이너) 9시간 어긋난다.
+    properties:
+      hibernate:
+        type:
+          java_time_use_direct_jdbc: true
+
+  data:
+    redis:
+      host: ${values.redis.host}
+      port: ${values.redis.port}
+
+  jackson:
+    time-zone: ${values.timezone}
+
+# --- 내장 Tomcat --------------------------------------------------------
+# CloudFront → ALB 구간에서 Host 가 오리진 주소(origin.gamza-dev.shop)로 바뀌어 들어온다.
+# 기본값(false)이면 sendRedirect("/") 를 Tomcat 이 "http://{Host}/" 절대 주소로 바꿔
+# 브라우저가 오리진으로 이동해 버리므로, 상대 경로를 그대로 내보내도록 고정한다.
+server:
+  shutdown: graceful            # Boot 기본값이지만 배포 전제(preStop·terminationGracePeriod)라 명시
+  tomcat:
+    # 유휴 keep-alive 연결을 닫기까지의 시간. ALB 유휴 시간(60초)보다 길어야 한다 — 같거나 짧으면
+    # ALB 가 재사용하려던 연결을 앱이 먼저 닫아 간헐적으로 502 가 난다 (Tomcat 기본은 60초)
+    keep-alive-timeout: ${values.tomcat-keep-alive-timeout}
+    use-relative-redirects: true
+    # Tomcat 스레드 풀 지표(tomcat_threads_busy_threads 등)를 /actuator/prometheus 로 내보내려면 필요 (기본 꺼짐)
+    mbeanregistry:
+      enabled: true
+    # 접근 로그는 기본 꺼짐. 켜더라도 쿼리스트링이 남지 않게 %U(경로만)를 쓴다 — 기본 형식의 %r 은
+    # "GET /api/issuance/session?JWT=..." 처럼 토큰까지 기록함 (플랜 4-1 쿼리스트링 마스킹)
+    accesslog:
+      pattern: '%h %t "%m %U %H" %s %b %D'
+
+# --- 헬스체크·지표 (Actuator) -------------------------------------------
+# 두 엔드포인트만 연다. CloudFront는 /api/* 만 ALB로 보내므로 외부에서는 닿지 않는다.
+#   GET /actuator/health      ALB·EKS 헬스체크 (liveness·readiness 그룹 포함)
+#   GET /actuator/prometheus  클러스터 안 Prometheus 가 수집 (ServiceMonitor, 모니터링 문서 4-3)
+#     — http_server_requests_seconds(API별 처리량·지연), jvm_*, tomcat_threads_*, hikaricp_connections_*
+management:
+  # 관리 포트 분리 (MVP 계획 B6): liveness·readiness·prometheus 는 8081 별도 커넥터.
+  # 요청이 몰려 8080 Tomcat 스레드가 꽉 차도 헬스체크는 응답한다 — 가장 바쁠 때 연쇄 재시작·대상 제외를 막는다.
+  # 외부 확인 API(/api/issuance/health)는 발급 경로 그대로 8080.
+  server:
+    port: ${values.management.port}
+  endpoints:
+    web:
+      exposure:
+        include: health,prometheus
+  endpoint:
+    health:
+      show-details: ${values.management.health-show-details}
+      probes:
+        enabled: true            # /actuator/health/liveness · /readiness (K8s 밖 로컬에서도)
+      group:
+        readiness:
+          # 앱 상태(웜업 완료 후 UP) + 이벤트 인증키 유무. DB·Redis 는 넣지 않는다 —
+          # 공용 의존성이 잠깐 흔들릴 때 모든 Pod 가 한꺼번에 대상에서 빠지는 것을 막기 위해
+          include: readinessState,eventAuthKey
+  metrics:
+    # 모든 지표에 이 Pod의 테넌트·이벤트를 붙인다 (A6) — Grafana 에서 이벤트별로 나눠 본다
+    tags:
+      tenant_id: ${values.tenant.id}
+      event_id: ${values.event.id}
+    # API별 p99 를 Prometheus 에서 계산할 수 있게 응답 시간을 히스토그램 버킷으로 내보낸다
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true
+
+# --- 앱 설정 (진행 문서 0-2 표의 tetra.* 키) ------------------------------
+tetra:
+  # 실행 모드 (A3): server(기본) · stock-load · aggregate — 같은 이미지를 K8s Job 으로도 쓴다
+  mode: ${TETRA_MODE:server}
+  # 이 Pod가 맡는 테넌트·이벤트 하나 (A2). DB 스키마 t_{tenant-id}, 다른 이벤트 요청은 404
+  scope:
+    tenant-id: ${values.tenant.id}
+    event-id: ${values.event.id}
+  timezone: ${values.timezone}
+  session:
+    redirect-url: ${values.session.redirect-url}
+    cookie-name: ${values.session.cookie-name}
+    ttl: ${values.session.ttl}
+    cookie-secure: ${values.session.cookie-secure}
+    entry-open-before: ${values.session.entry-open-before}
+    entry-open-grace: ${values.session.entry-open-grace}
+  queue:
+    cursor-step: ${values.queue.cursor-step}
+    cursor-window: ${values.queue.cursor-window}
+    cursor-cache-s-maxage: ${values.queue.cursor-cache-s-maxage}
+  jwt:
+    user-id-max-length: ${values.jwt.user-id-max-length}
+    clock-skew: ${values.jwt.clock-skew}
+    max-ttl: ${values.jwt.max-ttl}
+    test-private-key-path: ${values.jwt.test-private-key-path}
+  stock:
+    warmup-mode: ${values.stock.warmup-mode}
+  # 기동 웜업 (A4): 트래픽을 받기 전에 커넥션·Lua·핫 경로를 데운다. iterations 0 이면 끔
+  warmup:
+    iterations: ${values.warmup.iterations}
+    max-duration: ${values.warmup.max-duration}

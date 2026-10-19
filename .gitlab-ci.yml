@@ -1,0 +1,74 @@
+# issuance-api CI (MVP 계획 A0 · 인프라 플랜 5-2 ①②)
+#   MR   : test   — 단위·통합 테스트 (Testcontainers → Docker-in-Docker)
+#   main : test → build-image — 이미지 빌드(linux/amd64) → ECR tetra/issuance-api:<커밋 SHA 7자리> (IMMUTABLE)
+# 배포 반영(infra-k8s envs/dev/versions.yaml 의 issuanceApiImageTag MR)은 아직 사람이 한다 — ci-bot 토큰 미발급(미정)
+#
+# Runner: 태그 docker = 빌드 Runner(tetra/app 그룹 전용, privileged DinD, 역할 ECR push만 — 인프라 런북 3-4절)
+# AWS 키는 CI 변수에 넣지 않는다 — Runner 의 인스턴스 역할을 쓴다 (GitLab 컨벤션 9절)
+
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS
+      when: never
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_PIPELINE_SOURCE == "web"
+
+stages: [test, build]
+
+variables:
+  AWS_REGION: ap-northeast-2
+  ECR_REGISTRY: 261806339876.dkr.ecr.ap-northeast-2.amazonaws.com
+  IMAGE_REPO: tetra/issuance-api
+  IMAGE_TAG: $CI_COMMIT_SHORT_SHA
+  # Docker-in-Docker (TLS) — 서비스 컨테이너 docker 의 데몬을 쓴다
+  DOCKER_HOST: tcp://docker:2376
+  DOCKER_TLS_CERTDIR: /certs
+  DOCKER_TLS_VERIFY: "1"
+  DOCKER_CERT_PATH: /certs/client
+
+.dind:
+  tags: [docker]
+  services:
+    - docker:28.5-dind   # 서비스 호스트 이름 = docker (기본 별칭)
+
+test:
+  extends: .dind
+  stage: test
+  image: eclipse-temurin:21-jdk
+  variables:
+    GRADLE_USER_HOME: $CI_PROJECT_DIR/.gradle-home
+    # Testcontainers 가 띄운 컨테이너에 붙을 주소 = DinD 서비스
+    TESTCONTAINERS_HOST_OVERRIDE: docker
+  cache:
+    key:
+      files: [gradle/wrapper/gradle-wrapper.properties, build.gradle.kts]
+    paths: [.gradle-home/caches/, .gradle-home/wrapper/]
+  script:
+    - chmod +x gradlew
+    - ./gradlew --no-daemon test
+  artifacts:
+    when: always
+    reports:
+      junit: build/test-results/test/*.xml
+    expire_in: 7 days
+
+# 잡 이름을 image 로 두면 최상위 예약어(기본 이미지)로 해석된다 → build-image
+build-image:
+  extends: .dind
+  stage: build
+  image: docker:28.5
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  before_script:
+    - apk add --no-cache aws-cli >/dev/null
+    - aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$ECR_REGISTRY"
+  script:
+    - |
+      if aws ecr describe-images --region "$AWS_REGION" --repository-name "$IMAGE_REPO" --image-ids imageTag="$IMAGE_TAG" >/dev/null 2>&1; then
+        echo "이미 있는 태그 $IMAGE_TAG — 건너뜀 (ECR IMMUTABLE)"
+        exit 0
+      fi
+    - docker build --platform linux/amd64 -t "$ECR_REGISTRY/$IMAGE_REPO:$IMAGE_TAG" .
+    - docker push "$ECR_REGISTRY/$IMAGE_REPO:$IMAGE_TAG"
+    - echo "다음 단계 — infra-k8s envs/dev/versions.yaml 의 issuanceApiImageTag 를 $IMAGE_TAG 로 바꾸는 MR (지금은 수동)"

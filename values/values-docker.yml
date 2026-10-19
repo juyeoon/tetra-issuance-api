@@ -1,0 +1,66 @@
+# =====================================================================
+# Issuance Service — 로컬 컨테이너(docker compose --profile app) 환경 values
+# ---------------------------------------------------------------------
+# values-local.yml 과 같고, 컨테이너 네트워크 안에서 접속하도록 호스트만 다르다
+# (localhost → docker-compose 서비스 이름). TETRA_ENV=docker 일 때 읽힌다.
+# =====================================================================
+values:
+
+  # --- 이 Pod가 맡는 테넌트·이벤트 (MVP 계획 A2 — 이벤트마다 API Deployment 하나) -----
+  # 배포에서는 event 차트가 환경변수 VALUES_TENANT_ID · VALUES_EVENT_ID 로 덮어쓴다.
+  # DB 스키마는 t_{tenant.id} 로 정해진다 (MVP 물리 ERD — 테넌트별 스키마).
+  tenant:
+    id: poctenant001
+
+  db:
+    host: mysql                # docker-compose 서비스 이름
+    port: 3306
+    username: tetra
+    password: tetra            # 로컬 전용
+    ssl-mode: PREFERRED        # local과 같음 (dev는 REQUIRED)
+    pool-size: 5               # HikariCP 최대 커넥션 수 (Pod 1개당, B7 확정 2026-10-17)
+
+  redis:
+    host: valkey               # docker-compose 서비스 이름
+    port: 6379
+
+  timezone: Asia/Seoul
+
+  shutdown-timeout: 20s
+
+  # Tomcat keep-alive 유휴 시간 — ALB 유휴 시간(60초)보다 길게
+  tomcat-keep-alive-timeout: 65s
+
+  session:
+    redirect-url: /                 # 쿼리 없음 — 프런트는 event.json 에서 eventId 를 읽음 (MVP 계획 C20)
+    cookie-name: TETRA_SID
+    ttl: 2h
+    cookie-secure: true
+    entry-open-before: 60m       # 입장 OPEN = 시작 − 60분 (event.json entryOpenAt 과 같은 규칙)
+    entry-open-grace: 60s        # 서버 허용 오차
+
+  queue:
+    cursor-step: 300
+    cursor-window: 3s
+    cursor-cache-s-maxage: 1s
+
+  event:
+    id: 1                      # 이 Pod가 맡는 이벤트 (배포: VALUES_EVENT_ID)
+
+  jwt:
+    user-id-max-length: 128
+    clock-skew: 5s
+    max-ttl: 5m
+    test-private-key-path: ""  # 컨테이너 안에서는 쓰지 않음 (토큰은 호스트의 scripts/issue-test-jwt.sh 로 발급)
+
+  management:
+    port: 8081                 # 관리 포트 (B6) — liveness·readiness·prometheus
+    health-show-details: always
+
+  stock:
+    warmup-mode: if-absent     # 컨테이너 재시작해도 차감분 유지
+
+  # --- 기동 웜업 (A4) --------------------------------------------------------
+  warmup:
+    iterations: 1000         # 핫 경로 반복 횟수 (0 = 끔)
+    max-duration: 25s          # 상한 — 넘으면 남은 반복을 건너뛰고 readiness 로 넘어간다 (WF 2-2: 20~30초)

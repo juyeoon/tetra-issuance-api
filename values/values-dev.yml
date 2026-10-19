@@ -1,0 +1,68 @@
+# =====================================================================
+# Issuance Service — 클라우드(EKS, 인프라 문서 10절) 환경 values
+# ---------------------------------------------------------------------
+# K8s 차트가 이 파일을 ConfigMap issuance-values 로 만들어 /app/values/ 에 마운트한다 (TETRA_ENV=dev).
+# 비밀값은 여기에 두지 않는다 — Secret issuance-db → 환경변수 VALUES_DB_PASSWORD 가
+# values.db.password 를 덮어쓴다 (환경변수가 이 파일보다 우선).
+# =====================================================================
+values:
+
+  # --- 이 Pod가 맡는 테넌트·이벤트 (MVP 계획 A2 — 이벤트마다 API Deployment 하나) -----
+  # 배포에서는 event 차트가 환경변수 VALUES_TENANT_ID · VALUES_EVENT_ID 로 덮어쓴다.
+  # DB 스키마는 t_{tenant.id} 로 정해진다 (MVP 물리 ERD — 테넌트별 스키마).
+  tenant:
+    id: poctenant001
+
+  db:
+    host: tetra-dev-mysql.clm24mykstr4.ap-northeast-2.rds.amazonaws.com   # RDS MySQL 8.4 (MVP dev, 20-platform — 2026-10-17)
+    port: 3306
+    username: tetra_app        # 앱 전용 계정 (SELECT·INSERT·UPDATE). 마스터 계정은 비밀번호 자동 교체라 쓰지 않음
+    password: ""               # 비워 둠 → Secret 환경변수 VALUES_DB_PASSWORD 로 주입
+    ssl-mode: REQUIRED         # 8.4 계정이 caching_sha2_password — TLS로 붙어야 allowPublicKeyRetrieval 없이 접속
+    pool-size: 5               # 2026-10-17 확정(테스트 후, B7). 동시 이벤트 3 × maxReplicas × 5 ≤ max_connections(630) − 여유
+
+  redis:
+    host: redis                # 같은 Namespace 의 Service redis (StatefulSet valkey 7.2)
+    port: 6379
+
+  timezone: Asia/Seoul
+
+  # preStop 15초 + 이 값(20초) < terminationGracePeriodSeconds 45초
+  shutdown-timeout: 20s
+
+  # Tomcat keep-alive 유휴 시간 — ALB 유휴 시간(60초)보다 길게
+  tomcat-keep-alive-timeout: 65s
+
+  session:
+    redirect-url: /                 # 쿼리 없음 — 프런트는 event.json 에서 eventId 를 읽음 (MVP 계획 C20)
+    cookie-name: TETRA_SID
+    ttl: 2h
+    cookie-secure: true
+    entry-open-before: 60m       # 입장 OPEN = 시작 − 60분 (event.json entryOpenAt 과 같은 규칙)
+    entry-open-grace: 60s        # 서버 허용 오차
+
+  queue:
+    cursor-step: 300
+    cursor-window: 3s
+    cursor-cache-s-maxage: 1s
+
+  event:
+    id: 1                      # 이 Pod가 맡는 이벤트 (배포: VALUES_EVENT_ID)
+
+  jwt:
+    user-id-max-length: 128
+    clock-skew: 5s
+    max-ttl: 5m
+    test-private-key-path: ""  # 배포 환경은 테스트 토큰 발급 경로를 쓰지 않음
+
+  management:
+    port: 8081                 # 관리 포트 (B6) — liveness·readiness·prometheus
+    health-show-details: never # 외부에는 전체 UP·DOWN만 (구성요소 노출 방지)
+
+  stock:
+    warmup-mode: if-absent     # Pod 재시작·스케일아웃해도 차감분 유지 (force 금지)
+
+  # --- 기동 웜업 (A4) --------------------------------------------------------
+  warmup:
+    iterations: 3000         # 핫 경로 반복 횟수 (0 = 끔)
+    max-duration: 25s          # 상한 — 넘으면 남은 반복을 건너뛰고 readiness 로 넘어간다 (WF 2-2: 20~30초)

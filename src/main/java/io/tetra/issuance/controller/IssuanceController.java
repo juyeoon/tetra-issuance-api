@@ -1,0 +1,153 @@
+package io.tetra.issuance.controller;
+
+import java.util.List;
+import java.util.Optional;
+
+import org.springframework.http.CacheControl;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseCookie;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+import io.tetra.issuance.common.ApiResponse;
+import io.tetra.issuance.config.TetraProperties;
+import io.tetra.issuance.filter.SessionAuthFilter;
+import io.tetra.issuance.filter.VerifiedEntryToken;
+import io.tetra.issuance.service.ClaimService;
+import io.tetra.issuance.service.ClaimService.ClaimResult;
+import io.tetra.issuance.service.CouponService;
+import io.tetra.issuance.service.CouponService.CouponView;
+import io.tetra.issuance.service.QueueCursorService;
+import io.tetra.issuance.service.SessionService;
+import io.tetra.issuance.service.TicketService;
+import jakarta.servlet.http.HttpServletRequest;
+
+/**
+ * Issuance API (MVP: 세션·번호표·커서·쿠폰 목록·claim + 외부 확인 health, /info 는 제거 — 계획 C21). 얇게 유지 — 요청 값 꺼내기·응답 만들기만 하고 로직은 Service 에 둔다 (ADR-0002 결정 3).
+ */
+@RestController
+@RequestMapping("/api/issuance")
+public class IssuanceController {
+
+	private final SessionService sessionService;
+	private final TicketService ticketService;
+	private final QueueCursorService queueCursorService;
+	private final CouponService couponService;
+	private final ClaimService claimService;
+	private final TetraProperties properties;
+
+	public IssuanceController(SessionService sessionService, TicketService ticketService,
+			QueueCursorService queueCursorService, CouponService couponService, ClaimService claimService,
+			TetraProperties properties) {
+		this.sessionService = sessionService;
+		this.ticketService = ticketService;
+		this.queueCursorService = queueCursorService;
+		this.couponService = couponService;
+		this.claimService = claimService;
+		this.properties = properties;
+	}
+
+	/**
+	 * 4-1 세션 발급: 테넌트 302 리다이렉트로 들어온 입장 토큰(JwtAuthFilter 가 검증) → 세션 쿠키 + 302 대기방.
+	 * <ul>
+	 * <li>Location 은 설정값 그대로의 상대 경로 — 요청 Host 는 오리진 주소라 절대 주소를 만들면 안 됨</li>
+	 * <li>쿠키에 Domain 없음(host-only), Secure 는 요청 scheme 이 아닌 설정값</li>
+	 * <li>no-store: Set-Cookie 응답이 어디에도 캐시되지 않게. Referrer-Policy 는 JwtAuthFilter 가 붙임</li>
+	 * </ul>
+	 */
+	@GetMapping("/session")
+	ResponseEntity<Void> session(HttpServletRequest request) {
+		VerifiedEntryToken token = VerifiedEntryToken.from(request);
+		TetraProperties.Session config = properties.session();
+		String location = config.redirectUrl().replace("{eventId}", Long.toString(token.eventId()));
+		Optional<String> entered = sessionService.enter(token);
+		if (entered.isEmpty()) {
+			// 입장 OPEN 전 — 쿠키 없이 대기방으로 (대기 화면이 OPEN 시각에 다시 입장시킨다, MVP 계획 B4)
+			return ResponseEntity.status(HttpStatus.FOUND).header(HttpHeaders.LOCATION, location)
+					.cacheControl(CacheControl.noStore()).build();
+		}
+		String sid = entered.get();
+
+		ResponseCookie cookie = ResponseCookie.from(config.cookieName(), sid)
+				.httpOnly(true)
+				.secure(config.cookieSecure())
+				.sameSite("Lax")
+				.path("/")
+				.maxAge(config.ttl())
+				.build();
+
+		return ResponseEntity.status(HttpStatus.FOUND)
+				.header(HttpHeaders.LOCATION, location)
+				.header(HttpHeaders.SET_COOKIE, cookie.toString())
+				.cacheControl(CacheControl.noStore())
+				.build();
+	}
+
+	/**
+	 * 외부 확인 (MVP 계획 B5 · 워크플로우 2-2 "외부에서 열렸는지 확인"). 이벤트 주소 → CloudFront → ALB(Host 규칙) → 이 이벤트의 Pod 까지
+	 * 닿는지 본다. 이 Pod가 맡은 eventId 를 돌려주므로 다른 이벤트 Pod 로 잘못 연결된 것도 드러난다. 인증 없음, no-store.
+	 * 프로세스 상태(liveness·readiness)는 /actuator/health 쪽이다.
+	 */
+	@GetMapping("/health")
+	ResponseEntity<ApiResponse<HealthResponse>> health() {
+		return noStore(new HealthResponse("UP", properties.scope().eventId()));
+	}
+
+	record HealthResponse(String status, long eventId) {
+	}
+
+	/** 4-2 번호표 발급: 대기실(03 화면) 진입 시 호출. 재호출·새로고침 때마다 새 번호. */
+	@PostMapping("/events/{eventId}/ticket")
+	ResponseEntity<ApiResponse<TicketResponse>> ticket(@PathVariable long eventId, HttpServletRequest request) {
+		return noStore(new TicketResponse(ticketService.issue(SessionAuthFilter.sessionOf(request))));
+	}
+
+	record TicketResponse(long ticketNumber) {
+	}
+
+	/**
+	 * 4-3 서빙 커서 폴링. 인증 없음(SessionAuthFilter 가 이 경로는 통과시킴), 응답은 이벤트 공통 값.
+	 * Cache-Control: public, max-age=0, s-maxage=1 — CloudFront 같은 공유 캐시는 1초 캐시,
+	 * 브라우저는 캐시하지 않음(적응형 폴링 간격이 브라우저 캐시에 막히지 않게). 에러는 GlobalExceptionHandler 가 no-store.
+	 */
+	@GetMapping("/events/{eventId}/queue/cursor")
+	ResponseEntity<ApiResponse<CursorResponse>> cursor(@PathVariable long eventId) {
+		long cursor = queueCursorService.current(eventId);
+		return ResponseEntity.ok()
+				.header(HttpHeaders.CACHE_CONTROL,
+						"public, max-age=0, s-maxage=" + properties.queue().cursorCacheSMaxage().toSeconds())
+				.body(ApiResponse.ok(new CursorResponse(cursor)));
+	}
+
+	record CursorResponse(long cursor) {
+	}
+
+	/** 4-4 쿠폰 목록 + 잔여 수량(Redis 기준). */
+	@GetMapping("/events/{eventId}/coupons")
+	ResponseEntity<ApiResponse<CouponsResponse>> coupons(@PathVariable long eventId) {
+		return noStore(new CouponsResponse(couponService.list(eventId)));
+	}
+
+	record CouponsResponse(List<CouponView> coupons) {
+	}
+
+	/**
+	 * 4-5 쿠폰 일괄 발급. 성공·품절 모두 200 (result 로 구분). 번호표 없음은 409.
+	 * 이미 처리된 사용자가 다시 요청하면 처음 결과를 그대로 200 으로 돌려준다 (응답 유실 대비).
+	 */
+	@PostMapping("/events/{eventId}/coupons/claim")
+	ResponseEntity<ApiResponse<ClaimResult>> claim(@PathVariable long eventId, HttpServletRequest request) {
+		return noStore(claimService.claim(SessionAuthFilter.sessionOf(request)));
+	}
+
+	/** 사용자별 응답(번호표·쿠폰 목록·claim)은 어디에도 캐시되지 않게 (세션·에러 응답과 같은 규칙) */
+	private static <T> ResponseEntity<ApiResponse<T>> noStore(T data) {
+		return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(ApiResponse.ok(data));
+	}
+
+}
