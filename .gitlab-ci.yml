@@ -1,9 +1,10 @@
 # issuance-api CI (MVP 계획 A0 · 인프라 플랜 5-2 ①②)
 #   MR   : test   — 단위·통합 테스트 (Testcontainers → Docker-in-Docker)
-#   main : test → build-image — 이미지 빌드(linux/amd64) → ECR tetra/issuance-api:<커밋 SHA 7자리> (IMMUTABLE)
-# 배포 반영(infra-k8s envs/dev/versions.yaml 의 issuanceApiImageTag MR)은 아직 사람이 한다 — ci-bot 토큰 미발급(미정)
+#   main : test → build-image — 이미지 빌드(linux/amd64) → ECR tetra/issuance-api:<커밋 SHA 8자리> (IMMUTABLE)
+#          → update-infra-tag — infra-k8s envs/dev/versions.yaml 의 issuanceApiImageTag MR 을 봇이 만들고 병합 예약 (인수인계 CD 3-1)
 #
 # Runner: 태그 docker = 빌드 Runner(tetra/app 그룹 전용, privileged DinD, 역할 ECR push만 — 인프라 런북 3-4절)
+#         태그 general = AWS 권한 없는 일반 Runner (GitLab API 호출만)
 # AWS 키는 CI 변수에 넣지 않는다 — Runner 의 인스턴스 역할을 쓴다 (GitLab 컨벤션 9절)
 
 workflow:
@@ -14,7 +15,7 @@ workflow:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
     - if: $CI_PIPELINE_SOURCE == "web"
 
-stages: [test, build]
+stages: [test, build, deploy]
 
 variables:
   AWS_REGION: ap-northeast-2
@@ -71,4 +72,19 @@ build-image:
       fi
     - docker build --platform linux/amd64 -t "$ECR_REGISTRY/$IMAGE_REPO:$IMAGE_TAG" .
     - docker push "$ECR_REGISTRY/$IMAGE_REPO:$IMAGE_TAG"
-    - echo "다음 단계 — infra-k8s envs/dev/versions.yaml 의 issuanceApiImageTag 를 $IMAGE_TAG 로 바꾸는 MR (지금은 수동)"
+
+# infra-k8s 이미지 태그 MR — 스크립트 설명은 scripts/update-infra-tag.sh 머리말
+# CI_BOT_TOKEN: infra-k8s 프로젝트 액세스 토큰(Maintainer, api), Protected·Masked → main(보호 브랜치)에서만 주입
+update-infra-tag:
+  stage: deploy
+  image: alpine:3.22
+  tags: [general]
+  needs: [build-image]
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  # 같은 MR 을 동시에 만지지 않게 직렬화 (순서 보장은 아님 — 스크립트가 main HEAD 를 확인한다)
+  resource_group: infra-k8s-dev-issuance-api-tag
+  before_script:
+    - apk add --no-cache bash curl jq git >/dev/null
+  script:
+    - bash scripts/update-infra-tag.sh
