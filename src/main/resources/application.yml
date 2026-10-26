@@ -92,10 +92,12 @@ management:
     tags:
       tenant_id: ${values.tenant.id}
       event_id: ${values.event.id}
-    # API별 p99 를 Prometheus 에서 계산할 수 있게 응답 시간을 히스토그램 버킷으로 내보낸다
+    # 지연 분위수(p95 등)를 histogram_quantile 로 구할 수 있게 응답 시간을 고정 버킷으로 내보낸다.
+    # 300·400·500ms 를 촘촘히 둔다 — OPS-05 주의 기준선(초안 500ms, 부하 시험 뒤 확정)이 어느 값이 되어도 경계에서 정확히 계산되게.
+    # 버킷 하나마다 시계열이 (태그 조합 × Pod 수) 만큼 늘어난다 (기본 히스토그램 69개 대신 고정)
     distribution:
-      percentiles-histogram:
-        http.server.requests: true
+      slo:
+        http.server.requests: 25ms,50ms,100ms,200ms,300ms,400ms,500ms,800ms,1s,2s,5s
 
 # --- 앱 설정 (진행 문서 0-2 표의 tetra.* 키) ------------------------------
 tetra:
