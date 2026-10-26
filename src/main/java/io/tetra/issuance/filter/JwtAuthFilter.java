@@ -25,6 +25,7 @@ import io.tetra.issuance.common.BusinessException;
 import io.tetra.issuance.common.ErrorCode;
 import io.tetra.issuance.common.ErrorResponseWriter;
 import io.tetra.issuance.config.TetraProperties;
+import io.tetra.issuance.metrics.IssuanceMetrics;
 import io.tetra.issuance.service.EventMeta;
 import io.tetra.issuance.service.EventMetaCache;
 import jakarta.servlet.FilterChain;
@@ -42,6 +43,7 @@ import jakarta.servlet.http.HttpServletResponse;
  * <li>클레임: 서명이 확인된 뒤에만 검사 — exp(시계 오차 허용), exp 상한, jti, user_id 길이, tenant_id 형식·이벤트 소유 테넌트 일치.</li>
  * </ol>
  * 성공하면 {@link VerifiedEntryToken} 을 요청에 싣고 넘긴다. jti 1회 사용 확인(Redis)은 세션 서비스(M3)가 한다.
+ * 실패는 tetra_session_rejects_total{reason} 로 센다 — 필터에서 끝난 응답은 http_server_requests 의 uri 가 UNKNOWN 이라 구분되지 않기 때문.
  * 이 경로의 모든 응답(에러 포함)에 Referrer-Policy: no-referrer — 주소에 JWT 가 들어 있어 Referer 로 새지 않게.
  * 등록은 FilterConfig 에서 이 경로에만 한다 (@Component 금지: 붙이면 모든 경로에 자동 등록됨).
  */
@@ -60,13 +62,16 @@ public class JwtAuthFilter extends OncePerRequestFilter {
 	private final TetraProperties.Jwt config;
 	private final Clock clock;
 	private final ErrorResponseWriter errorWriter;
+	private final IssuanceMetrics metrics;
 	private final DefaultJWTProcessor<SecurityContext> processor = new DefaultJWTProcessor<>();
 
-	public JwtAuthFilter(EventMetaCache events, TetraProperties.Jwt config, Clock clock, ErrorResponseWriter errorWriter) {
+	public JwtAuthFilter(EventMetaCache events, TetraProperties.Jwt config, Clock clock, ErrorResponseWriter errorWriter,
+			IssuanceMetrics metrics) {
 		this.events = events;
 		this.config = config;
 		this.clock = clock;
 		this.errorWriter = errorWriter;
+		this.metrics = metrics;
 		processor.setJWTClaimsSetAwareJWSKeySelector(this::selectVerificationKey);
 		// 클레임 검사는 아래 verifyClaims 에서 직접 한다 (에러 코드를 구분하고, 시각을 Clock 으로 통일하기 위해)
 		processor.setJWTClaimsSetVerifier((claims, context) -> {
@@ -84,6 +89,7 @@ public class JwtAuthFilter extends OncePerRequestFilter {
 		catch (BusinessException e) {
 			// 토큰 값은 로그에 남기지 않는다 (쿼리스트링 마스킹 원칙)
 			log.info("Entry token rejected: {}", e.errorCode());
+			metrics.sessionRejected(e.errorCode());
 			errorWriter.write(response, e.errorCode());
 			return;
 		}

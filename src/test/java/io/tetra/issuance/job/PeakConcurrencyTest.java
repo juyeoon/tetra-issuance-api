@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.Map;
 
 import org.junit.jupiter.api.Test;
@@ -38,6 +39,27 @@ class PeakConcurrencyTest {
 		var peak = PeakConcurrency.of(Map.of(T, 50L, T.plusMinutes(10), 30L, T.plusMinutes(130), 40L), TTL);
 		// T+10 → 80, T+130 → (T+10, T+130] = 30 + 40 = 70
 		assertThat(peak).isEqualTo(new PeakConcurrency.Peak(80, T.plusMinutes(10)));
+	}
+
+	@Test
+	void 분_m_의_창은_m부터_119분_전까지_120개다() {
+		assertThat(PeakConcurrency.windowMinutes(T, TTL)).hasSize(120)
+				.startsWith(T)
+				.endsWith(T.minusMinutes(119))
+				.doesNotContain(T.minusMinutes(120), T.plusMinutes(1));
+	}
+
+	@Test
+	void 유효_세션_게이지가_분마다_보는_값의_최댓값이_종료_집계의_peak와_같다() {
+		for (Map<LocalDateTime, Long> perMinute : List.of(
+				Map.of(T, 100L, T.plusMinutes(120), 30L),
+				Map.of(T, 50L, T.plusMinutes(10), 30L, T.plusMinutes(130), 40L),
+				Map.of(T, 100L, T.plusMinutes(30), 50L, T.plusMinutes(119), 10L, T.plusMinutes(240), 1L))) {
+			long gaugeMax = perMinute.keySet().stream()
+					.mapToLong(m -> PeakConcurrency.windowMinutes(m, TTL).stream().mapToLong(w -> perMinute.getOrDefault(w, 0L)).sum())
+					.max().orElse(0);
+			assertThat(gaugeMax).as(perMinute.toString()).isEqualTo(PeakConcurrency.of(perMinute, TTL).concurrent());
+		}
 	}
 
 }

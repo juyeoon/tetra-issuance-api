@@ -1,5 +1,6 @@
 package io.tetra.issuance.filter;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -15,6 +16,7 @@ import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.Map;
 import java.util.Optional;
+import java.util.stream.Collectors;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -24,10 +26,13 @@ import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.tetra.issuance.common.ApiResponse;
 import io.tetra.issuance.common.ErrorResponseWriter;
 import io.tetra.issuance.common.PemPublicKeys;
 import io.tetra.issuance.config.TetraProperties;
+import io.tetra.issuance.metrics.IssuanceMetrics;
 import io.tetra.issuance.service.EventMeta;
 import io.tetra.issuance.service.EventMetaCache;
 import io.tetra.issuance.support.TestJwtFactory;
@@ -44,6 +49,7 @@ class JwtAuthFilterTest {
 	/** 이벤트 3의 두 번째 키(key_version 2) — 키 재발급으로 버전 1·2가 함께 ACTIVE 인 상황 */
 	final TestJwtFactory reissued = TestJwtFactory.withNewKeyPair();
 	final EventMetaCache events = mock(EventMetaCache.class);
+	final SimpleMeterRegistry registry = new SimpleMeterRegistry();
 	MockMvc mockMvc;
 
 	@BeforeEach
@@ -59,7 +65,7 @@ class JwtAuthFilterTest {
 						2L, PemPublicKeys.parseRsa(reissued.publicKeyPem())))));
 
 		var filter = new JwtAuthFilter(events, CONFIG, Clock.fixed(NOW, ZoneId.of("Asia/Seoul")),
-				new ErrorResponseWriter(JsonMapper.builder().build()));
+				new ErrorResponseWriter(JsonMapper.builder().build()), new IssuanceMetrics(registry));
 		mockMvc = MockMvcBuilders.standaloneSetup(new EchoController())
 				.addFilter(filter, JwtAuthFilter.PATH)
 				.build();
@@ -226,6 +232,58 @@ class JwtAuthFilterTest {
 	@Test
 	void event_id가_없으면_400() throws Exception {
 		expectError(enter(token().eventId(null).sign()), 400, "JWT_MALFORMED");
+	}
+
+	// --- 거절 카운터 tetra_session_rejects_total{reason} -------------------------------
+
+	interface Request {
+
+		ResultActions perform() throws Exception;
+
+	}
+
+	/** reason → 지금까지 센 수 */
+	Map<String, Double> rejects() {
+		return registry.find("tetra.session.rejects").counters().stream()
+				.collect(Collectors.toMap(c -> c.getId().getTag("reason"), Counter::count));
+	}
+
+	/** 요청 하나가 그 reason 만 1 올리고 나머지는 그대로인지 */
+	void expectRejectedAs(String reason, Request request) throws Exception {
+		Map<String, Double> before = rejects();
+		request.perform().andExpect(status().is4xxClientError());
+		Map<String, Double> after = rejects();
+		after.forEach((r, count) -> assertThat(count).as(reason + " 요청 뒤 " + r).isEqualTo(before.get(r) + (r.equals(reason) ? 1 : 0)));
+	}
+
+	@Test
+	void 거절_사유_8개가_처음부터_0으로_있고_라벨은_reason_뿐이다() {
+		assertThat(rejects()).containsOnlyKeys("invalid_signature", "expired", "malformed", "missing", "tenant_mismatch",
+				"event_not_found", "reused", "other").allSatisfy((reason, count) -> assertThat(count).isZero());
+		assertThat(registry.find("tetra.session.rejects").counters())
+				.allSatisfy(c -> assertThat(c.getId().getTags()).extracting(t -> t.getKey()).containsExactly("reason"));
+	}
+
+	@Test
+	void 거절은_그_사유의_카운터만_올린다() throws Exception {
+		expectRejectedAs("missing", () -> mockMvc.perform(get(JwtAuthFilter.PATH)));
+		expectRejectedAs("malformed", () -> enter("not-a-jwt"));
+		expectRejectedAs("malformed", () -> enter(token().kid(null).sign()));
+		expectRejectedAs("malformed", () -> enter(token().userId("u".repeat(129)).sign()));
+		expectRejectedAs("malformed", () -> enter(token().tenantId("PocTenant001").sign()));
+		expectRejectedAs("invalid_signature", () -> enter(token().signWithOtherKey()));
+		expectRejectedAs("invalid_signature", () -> enter(token().unsigned()));
+		expectRejectedAs("expired", () -> enter(token().issuedAt(NOW.minusSeconds(100)).expiresAt(NOW.minusSeconds(10)).sign()));
+		expectRejectedAs("tenant_mismatch", () -> enter(token().tenantId("othertenant1").sign()));
+		expectRejectedAs("event_not_found", () -> enter(token().eventId(999L).sign()));
+		expectRejectedAs("event_not_found", () -> enter(token().eventId(2L).sign()));
+	}
+
+	@Test
+	void 통과한_토큰은_거절로_세지_않는다() throws Exception {
+		Map<String, Double> before = rejects();
+		enter(token().sign()).andExpect(status().isOk());
+		assertThat(rejects()).isEqualTo(before);
 	}
 
 	/** 필터를 통과하면 검증된 값을 그대로 돌려주는 테스트용 컨트롤러 */

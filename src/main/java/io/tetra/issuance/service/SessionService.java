@@ -56,6 +56,7 @@ public class SessionService {
 		// 2. jti 1회 사용: 토큰이 유효한 동안(시계 오차 허용분 포함)만 기록해 두면 된다
 		Duration ttl = Duration.between(clock.instant(), token.expiresAt()).plus(properties.jwt().clockSkew());
 		if (!entryStore.markTokenUsed(token.jti(), atLeastOneSecond(ttl))) {
+			metrics.sessionRejected(ErrorCode.JWT_REUSED);
 			throw new BusinessException(ErrorCode.JWT_REUSED);
 		}
 
