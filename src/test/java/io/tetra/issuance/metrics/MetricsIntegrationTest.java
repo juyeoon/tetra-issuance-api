@@ -3,15 +3,25 @@ package io.tetra.issuance.metrics;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.time.Clock;
 import java.util.Arrays;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.context.SpringBootTest.WebEnvironment;
+import org.springframework.boot.test.web.server.LocalManagementPort;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.context.annotation.Import;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -23,7 +33,9 @@ import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Tag;
 import io.micrometer.core.instrument.Timer;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.tetra.issuance.TestcontainersConfiguration;
+import io.tetra.issuance.config.TetraProperties;
 import io.tetra.issuance.config.TetraProperties.WarmupMode;
 import io.tetra.issuance.redis.CouponStockStore;
 import io.tetra.issuance.service.CouponCatalog;
@@ -32,14 +44,26 @@ import io.tetra.issuance.support.TestEventKeys;
 import io.tetra.issuance.support.TestJwtFactory;
 import jakarta.servlet.http.Cookie;
 
-/** 업무 지표와 공통 태그 (MVP 계획 A6). */
+/**
+ * 업무 지표와 공통 태그 (MVP 계획 A6). /actuator/prometheus 는 관리 포트(8081, B6)에만 있어서
+ * 실제 서버를 띄우고 관리 포트를 무작위로 받는다. 업무 API 는 그대로 MockMvc.
+ */
 @Import(TestcontainersConfiguration.class)
-@SpringBootTest
+@SpringBootTest(webEnvironment = WebEnvironment.RANDOM_PORT, properties = "management.server.port=0")
 @AutoConfigureMockMvc
 class MetricsIntegrationTest {
 
+	@LocalManagementPort
+	int managementPort;
+
 	@Autowired
 	MockMvc mockMvc;
+
+	@Autowired
+	TetraProperties properties;
+
+	@Autowired
+	Clock clock;
 
 	@Autowired
 	MeterRegistry registry;
@@ -74,6 +98,18 @@ class MetricsIntegrationTest {
 		Gauge g = registry.find(name).gauge();
 		assertThat(g).as(name).isNotNull();
 		return g.value();
+	}
+
+	Map<String, Double> rejects() {
+		return registry.find("tetra.session.rejects").counters().stream()
+				.collect(Collectors.toMap(c -> c.getId().getTag("reason"), Counter::count));
+	}
+
+	/** 컨텍스트 게이지와 따로, 캐시 없이 지금 값을 읽는다 */
+	double sessionsActiveNow() {
+		var fresh = new SimpleMeterRegistry();
+		new EventStateGauges(fresh, redis, properties, clock);
+		return fresh.get("tetra.event.sessions.active").gauge().value();
 	}
 
 	String enter(String userId) throws Exception {
@@ -114,6 +150,43 @@ class MetricsIntegrationTest {
 		assertThat(gauge("tetra.event.stock.remaining")).isEqualTo(4);
 		assertThat(gauge("tetra.event.cursor")).isEqualTo(900);
 		assertThat(gauge("tetra.event.ticket.last")).isEqualTo(1234);
+	}
+
+	@Test
+	void 유효_세션_게이지는_세션_발급이_남긴_분_키를_센다() throws Exception {
+		double before = sessionsActiveNow();
+		String userId = "metrics-" + UUID.randomUUID();
+		enter(userId);
+		enter(userId); // 재입장(세션 재사용)은 세지 않는다
+		assertThat(sessionsActiveNow()).isEqualTo(before + 1);
+	}
+
+	@Test
+	void jti를_다시_쓰면_reused만_오르고_세션_쿠키_실패는_세지_않는다() throws Exception {
+		Map<String, Double> before = rejects();
+		String jwt = tenant.token().userId("metrics-" + UUID.randomUUID()).sign();
+		mockMvc.perform(get("/api/issuance/session").param("JWT", jwt)).andExpect(status().isFound());
+		mockMvc.perform(get("/api/issuance/session").param("JWT", jwt)).andExpect(status().isUnauthorized());
+		// 세션 쿠키 실패 (SessionAuthFilter) — 입장 토큰 거절이 아니다
+		mockMvc.perform(post("/api/issuance/events/1/ticket")).andExpect(status().isUnauthorized());
+		mockMvc.perform(post("/api/issuance/events/1/coupons/claim").cookie(new Cookie("TETRA_SID", "bogus")))
+				.andExpect(status().isUnauthorized());
+
+		Map<String, Double> after = rejects();
+		after.forEach((reason, n) -> assertThat(n).as(reason).isEqualTo(before.get(reason) + (reason.equals("reused") ? 1 : 0)));
+	}
+
+	@Test
+	void 새_지표가_actuator_prometheus에_나온다() throws Exception {
+		HttpResponse<String> res = HttpClient.newHttpClient().send(
+				HttpRequest.newBuilder(URI.create("http://localhost:" + managementPort + "/actuator/prometheus")).build(),
+				HttpResponse.BodyHandlers.ofString());
+		assertThat(res.statusCode()).isEqualTo(200);
+		assertThat(res.body()).containsPattern("(?m)^tetra_event_sessions_active\\{event_id=\"1\",tenant_id=\"poctenant001\"} ");
+		for (String reason : IssuanceMetrics.REJECT_REASONS) {
+			assertThat(res.body()).containsPattern(
+					"(?m)^tetra_session_rejects_total\\{event_id=\"1\",reason=\"" + reason + "\",tenant_id=\"poctenant001\"} ");
+		}
 	}
 
 	@Test

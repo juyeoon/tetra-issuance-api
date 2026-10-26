@@ -9,6 +9,7 @@ import org.springframework.context.annotation.Configuration;
 import io.tetra.issuance.common.ErrorResponseWriter;
 import io.tetra.issuance.filter.JwtAuthFilter;
 import io.tetra.issuance.filter.SessionAuthFilter;
+import io.tetra.issuance.metrics.IssuanceMetrics;
 import io.tetra.issuance.redis.SessionStore;
 import io.tetra.issuance.service.EventMetaCache;
 
@@ -18,9 +19,9 @@ public class FilterConfig {
 
 	@Bean
 	FilterRegistrationBean<JwtAuthFilter> jwtAuthFilter(EventMetaCache events, TetraProperties properties, Clock clock,
-			ErrorResponseWriter errorWriter) {
+			ErrorResponseWriter errorWriter, IssuanceMetrics metrics) {
 		var registration = new FilterRegistrationBean<>(
-				new JwtAuthFilter(events, properties.jwt(), clock, errorWriter));
+				new JwtAuthFilter(events, properties.jwt(), clock, errorWriter, metrics));
 		registration.addUrlPatterns(JwtAuthFilter.PATH);
 		registration.setName("jwtAuthFilter");
 		registration.setOrder(10);

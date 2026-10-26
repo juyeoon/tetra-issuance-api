@@ -2,6 +2,8 @@ package io.tetra.issuance.job;
 
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.NavigableMap;
 import java.util.TreeMap;
@@ -31,8 +33,7 @@ public final class PeakConcurrency {
 		for (Map.Entry<LocalDateTime, Long> e : sorted.entrySet()) {
 			window += e.getValue();
 			// 창 (m − TTL, m] 밖으로 나간 분을 뺀다
-			LocalDateTime windowStart = e.getKey().minus(sessionTtl);
-			while (!tail.isAfter(windowStart)) {
+			while (!inWindow(tail, e.getKey(), sessionTtl)) {
 				window -= sorted.get(tail);
 				tail = sorted.higherKey(tail);
 			}
@@ -42,6 +43,23 @@ public final class PeakConcurrency {
 			}
 		}
 		return new Peak(best, bestAt);
+	}
+
+	/**
+	 * 분 m 의 창 (m − TTL, m] 에 드는 분 — m 부터 거꾸로. TTL 2시간이면 120개.
+	 * 유효 세션 게이지(EventStateGauges)가 이 분들의 entry:min 키를 더한다 → 종료 집계의 창과 같은 정의.
+	 */
+	public static List<LocalDateTime> windowMinutes(LocalDateTime minute, Duration sessionTtl) {
+		List<LocalDateTime> minutes = new ArrayList<>();
+		for (LocalDateTime m = minute; inWindow(m, minute, sessionTtl); m = m.minusMinutes(1)) {
+			minutes.add(m);
+		}
+		return minutes;
+	}
+
+	/** created 분에 만든 세션이 분 m 에 살아 있는지 — created ∈ (m − TTL, m] */
+	static boolean inWindow(LocalDateTime created, LocalDateTime minute, Duration sessionTtl) {
+		return created.isAfter(minute.minus(sessionTtl)) && !created.isAfter(minute);
 	}
 
 }
