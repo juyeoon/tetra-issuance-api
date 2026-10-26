@@ -4,7 +4,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 
+import java.util.Arrays;
 import java.util.UUID;
+import java.util.concurrent.TimeUnit;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -19,6 +21,8 @@ import org.springframework.test.web.servlet.MockMvc;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Tag;
+import io.micrometer.core.instrument.Timer;
 import io.tetra.issuance.TestcontainersConfiguration;
 import io.tetra.issuance.config.TetraProperties.WarmupMode;
 import io.tetra.issuance.redis.CouponStockStore;
@@ -119,6 +123,30 @@ class MetricsIntegrationTest {
 			assertThat(c.getId().getTag("event_id")).isEqualTo("1");
 		});
 		assertThat(registry.find("tetra.event.cursor").gauge().getId().getTag("event_id")).isEqualTo("1");
+	}
+
+	/**
+	 * 응답 시간 고정 버킷 (OPS-05 지연 그래프 p95). 300·400·500ms 를 촘촘히 둔다 — 주의 기준선(초안 500ms, 부하 시험 뒤 확정)이
+	 * 어느 값이 되어도 경계에서 정확히 계산되게. 버킷 경계만 바뀌고
+	 * _count 시리즈의 태그(KEDA·홈 화면 쿼리)는 그대로여야 한다.
+	 */
+	@Test
+	void 요청_지연은_고정_버킷으로_기록되고_태그는_그대로다() throws Exception {
+		Cookie cookie = new Cookie("TETRA_SID", enter("metrics-" + UUID.randomUUID()));
+		mockMvc.perform(post("/api/issuance/events/1/ticket").cookie(cookie));
+		mockMvc.perform(post("/api/issuance/events/1/coupons/claim").cookie(cookie));
+
+		for (String uri : new String[] { "/api/issuance/session", "/api/issuance/events/{eventId}/ticket",
+				"/api/issuance/events/{eventId}/coupons/claim" }) {
+			Timer timer = registry.find("http.server.requests").tag("uri", uri).timer();
+			assertThat(timer).as(uri).isNotNull();
+			assertThat(Arrays.stream(timer.takeSnapshot().histogramCounts()).mapToDouble(b -> b.bucket(TimeUnit.SECONDS)))
+				.as(uri)
+				.containsExactly(0.025, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.8, 1.0, 2.0, 5.0);
+			assertThat(timer.getId().getTags()).extracting(Tag::getKey)
+				.containsExactlyInAnyOrder("error", "event_id", "exception", "method", "outcome", "status", "tenant_id",
+						"uri");
+		}
 	}
 
 }
