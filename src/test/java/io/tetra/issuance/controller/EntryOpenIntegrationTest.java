@@ -83,7 +83,8 @@ class EntryOpenIntegrationTest {
 
 	@Test
 	void OPEN_전이면_세션_없이_대기방으로_302이고_jti와_진입_카운트를_남기지_않는다() throws Exception {
-		startEventIn(2 * 3600); // OPEN = 지금 + 1시간
+		// startEventIn(2 * 3600); // OPEN = 지금 + 1시간 — TEST-LEAD 원래 값
+		startEventIn(3600 + 300); // OPEN = 지금 + 1시간 — TEST-LEAD 시험용 임시 (entry-open-before 5분)
 		long before = entryCount();
 		String jti = "open-" + UUID.randomUUID();
 
@@ -98,7 +99,8 @@ class EntryOpenIntegrationTest {
 
 	@Test
 	void OPEN_60초_전_여유_안이면_세션을_발급한다() throws Exception {
-		startEventIn(3600 + 30); // 시작 − 60분 − 60초 = 지금 − 30초
+		// startEventIn(3600 + 30); // 시작 − 60분 − 60초 = 지금 − 30초 — TEST-LEAD 원래 값
+		startEventIn(300 + 30); // 시작 − 5분 − 60초 = 지금 − 30초 — TEST-LEAD 시험용 임시
 		MockHttpServletResponse res = enter("open-" + UUID.randomUUID());
 		assertThat(res.getStatus()).isEqualTo(302);
 		assertThat(res.getHeader("Set-Cookie")).startsWith("TETRA_SID=");
@@ -106,7 +108,8 @@ class EntryOpenIntegrationTest {
 
 	@Test
 	void 여유보다_이르면_발급하지_않는다() throws Exception {
-		startEventIn(3600 + 90); // 시작 − 60분 − 60초 = 지금 + 30초
+		// startEventIn(3600 + 90); // 시작 − 60분 − 60초 = 지금 + 30초 — TEST-LEAD 원래 값
+		startEventIn(300 + 90); // 시작 − 5분 − 60초 = 지금 + 30초 — TEST-LEAD 시험용 임시
 		assertThat(enter("open-" + UUID.randomUUID()).getHeader("Set-Cookie")).isNull();
 	}
 
