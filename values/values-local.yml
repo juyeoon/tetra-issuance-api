@@ -52,7 +52,8 @@ values:
     ttl: 2h
     cookie-secure: true        # localhost 는 브라우저가 보안 출처로 취급해 Secure 쿠키 허용
     # 입장(세션 발급) OPEN = 이벤트 시작 − 60분 (모든 플랜 고정, event.json entryOpenAt 과 같은 규칙 — 바꾸면 워크플로우 상수도 함께)
-    entry-open-before: 60m
+    # entry-open-before: 60m   # TEST-LEAD 원래 값
+    entry-open-before: 5m      # TEST-LEAD 시험용 임시 (입장 OPEN = 시작 − 5분)
     # 서버 허용 오차: OPEN 60초 전부터 발급 (브라우저 시계가 빠를 때 재입장 반복 방지)
     entry-open-grace: 60s
 

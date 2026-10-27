@@ -27,7 +27,8 @@ class TetraPropertiesTest {
 			"tetra.session.cookie-name=TETRA_SID",
 			"tetra.session.ttl=2h",
 			"tetra.session.cookie-secure=true",
-			"tetra.session.entry-open-before=60m",
+			// "tetra.session.entry-open-before=60m", // TEST-LEAD 원래 값
+			"tetra.session.entry-open-before=5m", // TEST-LEAD 시험용 임시
 			"tetra.session.entry-open-grace=60s",
 			"tetra.queue.cursor-step=300",
 			"tetra.queue.cursor-window=3s",
