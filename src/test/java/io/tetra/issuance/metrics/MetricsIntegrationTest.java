@@ -11,9 +11,11 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Clock;
 import java.util.Arrays;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -216,6 +218,20 @@ class MetricsIntegrationTest {
 		for (String reason : IssuanceMetrics.REJECT_REASONS) {
 			assertThat(res.body()).containsPattern(
 					"(?m)^tetra_session_rejects_total\\{event_id=\"1\",reason=\"" + reason + "\",tenant_id=\"poctenant001\"} ");
+		}
+		// 결과별 카운터도 첫 요청 전부터 나와 있어야 한다. 값은 같은 컨텍스트의 다른 테스트가 올렸을 수 있어 보지 않는다
+		for (String series : List.of(
+				"tetra_sessions_total{event_id=\"1\",result=\"created\",tenant_id=\"poctenant001\"}",
+				"tetra_sessions_total{event_id=\"1\",result=\"reused\",tenant_id=\"poctenant001\"}",
+				"tetra_sessions_total{event_id=\"1\",result=\"before_open\",tenant_id=\"poctenant001\"}",
+				"tetra_tickets_total{event_id=\"1\",result=\"issued\",tenant_id=\"poctenant001\"}",
+				"tetra_tickets_total{event_id=\"1\",result=\"already_claimed\",tenant_id=\"poctenant001\"}",
+				"tetra_tickets_total{event_id=\"1\",result=\"session_gone\",tenant_id=\"poctenant001\"}",
+				"tetra_claims_total{event_id=\"1\",replay=\"false\",result=\"success\",tenant_id=\"poctenant001\"}",
+				"tetra_claims_total{event_id=\"1\",replay=\"false\",result=\"sold_out\",tenant_id=\"poctenant001\"}",
+				"tetra_claims_total{event_id=\"1\",replay=\"true\",result=\"success\",tenant_id=\"poctenant001\"}",
+				"tetra_claims_total{event_id=\"1\",replay=\"true\",result=\"sold_out\",tenant_id=\"poctenant001\"}")) {
+			assertThat(res.body()).containsPattern("(?m)^" + Pattern.quote(series) + " ");
 		}
 	}
 
