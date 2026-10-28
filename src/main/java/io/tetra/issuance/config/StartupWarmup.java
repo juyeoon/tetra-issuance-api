@@ -38,6 +38,8 @@ import com.nimbusds.jwt.JWTClaimsSet;
 import com.nimbusds.jwt.SignedJWT;
 import com.zaxxer.hikari.HikariDataSource;
 
+import io.tetra.issuance.metrics.WarmupRequests;
+
 /**
  * 기동 웜업 (MVP 계획 A4 · 운영 flow 2-2 "Application Warmup"). server 모드에서만, 트래픽을 받기 전에 한 번 실행한다.
  * <p>
@@ -47,7 +49,8 @@ import com.zaxxer.hikari.HikariDataSource;
  * <li>DB 커넥션 풀을 minimumIdle(= 풀 크기)까지 채움</li>
  * <li>Redis 연결, Lua 스크립트 SCRIPT LOAD (첫 EVALSHA 가 NOSCRIPT 로 한 번 더 왕복하지 않게)</li>
  * <li>핫 경로 반복: RS256 서명 검증(JIT), 번호표·claim Lua 를 {@code warmup:} 접두사 키로 실행, 자기 자신에게 HTTP
- * (health·커서) — 실제 번호·재고·세션 키는 건드리지 않는다</li>
+ * (health·커서) — 실제 번호·재고·세션 키는 건드리지 않는다. 자기 자신에게 보내는 HTTP 는 {@link WarmupRequests} 표시를 달아
+ * http_server_requests 지표에 남기지 않는다 (KEDA·Console·Portal RPS 에 섞이지 않게)</li>
  * <li>{@code warmup:} 키 삭제</li>
  * </ol>
  * 웜업이 실패해도 기동은 계속한다(로그만) — 웜업은 성능을 위한 것이고 정확성과 무관하다.
@@ -70,13 +73,16 @@ public class StartupWarmup implements ApplicationRunner {
 
 	private final Environment environment;
 
+	private final WarmupRequests warmupRequests;
+
 	public StartupWarmup(TetraProperties properties, DataSource dataSource, StringRedisTemplate redis,
-			Map<String, RedisScript<?>> scripts, Environment environment) {
+			Map<String, RedisScript<?>> scripts, Environment environment, WarmupRequests warmupRequests) {
 		this.properties = properties;
 		this.dataSource = dataSource;
 		this.redis = redis;
 		this.scripts = scripts;
 		this.environment = environment;
+		this.warmupRequests = warmupRequests;
 	}
 
 	@Override
@@ -164,8 +170,11 @@ public class StartupWarmup implements ApplicationRunner {
 	}
 
 	private void get(HttpClient http, String path) throws Exception {
-		http.send(HttpRequest.newBuilder(URI.create(localServer() + path)).timeout(Duration.ofSeconds(2)).GET().build(),
-				HttpResponse.BodyHandlers.discarding());
+		http.send(HttpRequest.newBuilder(URI.create(localServer() + path))
+				.header(WarmupRequests.HEADER, warmupRequests.token())
+				.timeout(Duration.ofSeconds(2))
+				.GET()
+				.build(), HttpResponse.BodyHandlers.discarding());
 	}
 
 	private void deleteWarmupKeys() {

@@ -27,14 +27,17 @@ import org.springframework.context.annotation.Import;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.request.RequestPostProcessor;
 
 import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.FunctionTimer;
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Tag;
 import io.micrometer.core.instrument.Timer;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.tetra.issuance.TestcontainersConfiguration;
+import io.tetra.issuance.config.StartupWarmup;
 import io.tetra.issuance.config.TetraProperties;
 import io.tetra.issuance.config.TetraProperties.WarmupMode;
 import io.tetra.issuance.redis.CouponStockStore;
@@ -80,6 +83,16 @@ class MetricsIntegrationTest {
 	@Autowired
 	CouponCatalog catalog;
 
+	@Autowired
+	StartupWarmup warmup;
+
+	@Autowired
+	WarmupRequests warmupRequests;
+
+	static final String HEALTH_URI = "/api/issuance/health";
+
+	static final String CURSOR_URI = "/api/issuance/events/{eventId}/queue/cursor";
+
 	final TestJwtFactory tenant = TestJwtFactory.withNewKeyPair();
 
 	@BeforeEach
@@ -110,6 +123,23 @@ class MetricsIntegrationTest {
 		var fresh = new SimpleMeterRegistry();
 		new EventStateGauges(fresh, redis, properties, clock);
 		return fresh.get("tetra.event.sessions.active").gauge().value();
+	}
+
+	/** http.server.requests 요청 수 — 같은 uri 의 status·outcome 조합을 합친다 */
+	long requests(String uri) {
+		return registry.find("http.server.requests").tag("uri", uri).timers().stream().mapToLong(Timer::count).sum();
+	}
+
+	/** Tomcat 커넥터가 받은 요청 수 (tomcat.global.request) — 관찰을 꺼도 실제 HTTP 는 여기 잡힌다 */
+	double tomcatRequests() {
+		return registry.find("tomcat.global.request").functionTimers().stream().mapToDouble(FunctionTimer::count).sum();
+	}
+
+	static RequestPostProcessor remoteAddr(String address) {
+		return request -> {
+			request.setRemoteAddr(address);
+			return request;
+		};
 	}
 
 	String enter(String userId) throws Exception {
@@ -220,6 +250,52 @@ class MetricsIntegrationTest {
 				.containsExactlyInAnyOrder("error", "event_id", "exception", "method", "outcome", "status", "tenant_id",
 						"uri");
 		}
+	}
+
+	// --- 기동 웜업 요청은 http.server.requests 에서 뺀다 (KEDA·Console·Portal RPS) ---------------------
+
+	@Test
+	void 웜업_표시와_루프백이면_요청_지표에_남지_않는다() throws Exception {
+		long health = requests(HEALTH_URI);
+		long cursor = requests(CURSOR_URI);
+		mockMvc.perform(get(HEALTH_URI).header(WarmupRequests.HEADER, warmupRequests.token()))
+				.andExpect(status().isOk());
+		mockMvc.perform(get("/api/issuance/events/1/queue/cursor").header(WarmupRequests.HEADER, warmupRequests.token()))
+				.andExpect(status().isOk());
+		assertThat(requests(HEALTH_URI)).isEqualTo(health);
+		assertThat(requests(CURSOR_URI)).isEqualTo(cursor);
+	}
+
+	@Test
+	void 웜업_표시라도_외부_주소면_요청_지표에_남는다() throws Exception {
+		long before = requests(HEALTH_URI);
+		mockMvc.perform(get(HEALTH_URI).header(WarmupRequests.HEADER, warmupRequests.token()).with(remoteAddr("203.0.113.7")))
+				.andExpect(status().isOk());
+		assertThat(requests(HEALTH_URI)).isEqualTo(before + 1);
+	}
+
+	@Test
+	void 표시가_없는_요청은_요청_지표에_남는다() throws Exception {
+		long health = requests(HEALTH_URI);
+		long cursor = requests(CURSOR_URI);
+		mockMvc.perform(get(HEALTH_URI)).andExpect(status().isOk());
+		mockMvc.perform(get("/api/issuance/events/1/queue/cursor")).andExpect(status().isOk());
+		assertThat(requests(HEALTH_URI)).isEqualTo(health + 1);
+		assertThat(requests(CURSOR_URI)).isEqualTo(cursor + 1);
+	}
+
+	/** 실제 서버 경로 — 웜업이 127.0.0.1 로 보낸 HTTP 가 Tomcat 까지 가지만 요청 지표에는 남지 않는다 */
+	@Test
+	void 기동_웜업의_HTTP_요청은_서버에_닿고_요청_지표에는_남지_않는다() {
+		long health = requests(HEALTH_URI);
+		long cursor = requests(CURSOR_URI);
+		double tomcat = tomcatRequests();
+
+		warmup.run(null);
+
+		assertThat(tomcatRequests()).as("웜업 HTTP 가 서버에 닿았다").isGreaterThan(tomcat);
+		assertThat(requests(HEALTH_URI)).isEqualTo(health);
+		assertThat(requests(CURSOR_URI)).isEqualTo(cursor);
 	}
 
 }
