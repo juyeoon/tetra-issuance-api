@@ -45,6 +45,7 @@ values:
   queue:
     cursor-step: 300
     cursor-window: 3s
+    cursor-slack: 300          # 커서 상한 = 번호표 끝 + 이 값 (0 이상)
     cursor-cache-s-maxage: 1s
 
   event:

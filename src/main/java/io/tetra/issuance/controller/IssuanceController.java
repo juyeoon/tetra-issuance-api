@@ -18,6 +18,7 @@ import io.tetra.issuance.common.ApiResponse;
 import io.tetra.issuance.config.TetraProperties;
 import io.tetra.issuance.filter.SessionAuthFilter;
 import io.tetra.issuance.filter.VerifiedEntryToken;
+import io.tetra.issuance.metrics.WarmupRequests;
 import io.tetra.issuance.service.ClaimService;
 import io.tetra.issuance.service.ClaimService.ClaimResult;
 import io.tetra.issuance.service.CouponService;
@@ -40,16 +41,18 @@ public class IssuanceController {
 	private final CouponService couponService;
 	private final ClaimService claimService;
 	private final TetraProperties properties;
+	private final WarmupRequests warmupRequests;
 
 	public IssuanceController(SessionService sessionService, TicketService ticketService,
 			QueueCursorService queueCursorService, CouponService couponService, ClaimService claimService,
-			TetraProperties properties) {
+			TetraProperties properties, WarmupRequests warmupRequests) {
 		this.sessionService = sessionService;
 		this.ticketService = ticketService;
 		this.queueCursorService = queueCursorService;
 		this.couponService = couponService;
 		this.claimService = claimService;
 		this.properties = properties;
+		this.warmupRequests = warmupRequests;
 	}
 
 	/**
@@ -114,10 +117,11 @@ public class IssuanceController {
 	 * 4-3 서빙 커서 폴링. 인증 없음(SessionAuthFilter 가 이 경로는 통과시킴), 응답은 이벤트 공통 값.
 	 * Cache-Control: public, max-age=0, s-maxage=1 — CloudFront 같은 공유 캐시는 1초 캐시,
 	 * 브라우저는 캐시하지 않음(적응형 폴링 간격이 브라우저 캐시에 막히지 않게). 에러는 GlobalExceptionHandler 가 no-store.
+	 * 기동 웜업 요청({@link WarmupRequests})은 커서를 올리지 않는다.
 	 */
 	@GetMapping("/events/{eventId}/queue/cursor")
-	ResponseEntity<ApiResponse<CursorResponse>> cursor(@PathVariable long eventId) {
-		long cursor = queueCursorService.current(eventId);
+	ResponseEntity<ApiResponse<CursorResponse>> cursor(@PathVariable long eventId, HttpServletRequest request) {
+		long cursor = queueCursorService.current(eventId, warmupRequests.isWarmup(request));
 		return ResponseEntity.ok()
 				.header(HttpHeaders.CACHE_CONTROL,
 						"public, max-age=0, s-maxage=" + properties.queue().cursorCacheSMaxage().toSeconds())

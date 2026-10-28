@@ -18,6 +18,8 @@ import jakarta.servlet.http.HttpServletRequest;
  * 클러스터 안 호출자가 127.0.0.1 을 흉내 낼 수 있다. 값은 루프백 요청 헤더에만 실리고 밖으로 나가지 않는다.
  * <p>
  * 관찰(Observation) 자체를 끄므로 카운트·히스토그램·active 모두 남지 않는다. 요청 처리(Tomcat·필터·컨트롤러)는 그대로 돈다.
+ * <p>
+ * 커서 API 도 같은 판정({@link #isWarmup})으로 웜업 요청이면 커서를 올리지 않는다 — 이벤트 시작 뒤 Pod 가 새로 떠도 커서가 튀지 않게.
  */
 @Component
 public class WarmupRequests implements ObservationPredicate {
@@ -36,7 +38,7 @@ public class WarmupRequests implements ObservationPredicate {
 		return !(context instanceof ServerRequestObservationContext server && isWarmup(server.getCarrier()));
 	}
 
-	boolean isWarmup(HttpServletRequest request) {
+	public boolean isWarmup(HttpServletRequest request) {
 		return token.equals(request.getHeader(HEADER)) && isLoopback(request.getRemoteAddr());
 	}
 

@@ -50,7 +50,8 @@ import io.tetra.issuance.metrics.WarmupRequests;
  * <li>Redis 연결, Lua 스크립트 SCRIPT LOAD (첫 EVALSHA 가 NOSCRIPT 로 한 번 더 왕복하지 않게)</li>
  * <li>핫 경로 반복: RS256 서명 검증(JIT), 번호표·claim Lua 를 {@code warmup:} 접두사 키로 실행, 자기 자신에게 HTTP
  * (health·커서) — 실제 번호·재고·세션 키는 건드리지 않는다. 자기 자신에게 보내는 HTTP 는 {@link WarmupRequests} 표시를 달아
- * http_server_requests 지표에 남기지 않는다 (KEDA·Console·Portal RPS 에 섞이지 않게)</li>
+ * http_server_requests 지표에 남기지 않는다 (KEDA·Console·Portal RPS 에 섞이지 않게).
+ * 커서 API 는 이 Pod 이벤트의 실제 커서 키로 커서 Lua 를 돌리지만, 웜업 표시가 있으면 증가 없이 읽기만 한다 (락도 잡지 않음)</li>
  * <li>{@code warmup:} 키 삭제</li>
  * </ol>
  * 웜업이 실패해도 기동은 계속한다(로그만) — 웜업은 성능을 위한 것이고 정확성과 무관하다.

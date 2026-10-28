@@ -19,7 +19,7 @@ import org.junit.jupiter.api.Test;
 import io.tetra.issuance.config.TetraProperties;
 import io.tetra.issuance.redis.CursorStore;
 
-/** 시작 전에는 커서를 올리지 않는다(D10) — 고정 Clock 으로 확인. */
+/** 시작 전·웜업 요청이면 커서를 올리지 않는다(D10) — 고정 Clock 으로 확인. */
 class QueueCursorServiceTest {
 
 	static final ZoneId KST = ZoneId.of("Asia/Seoul");
@@ -32,21 +32,28 @@ class QueueCursorServiceTest {
 
 	QueueCursorService serviceAt(LocalDateTime now) {
 		when(events.find(1L)).thenReturn(Optional.of(new EventMeta(1L, "poctenant001", START, END, null)));
-		when(properties.queue()).thenReturn(new TetraProperties.Queue(300, Duration.ofSeconds(3), Duration.ofSeconds(1)));
-		when(cursorStore.advanceAndGet(eq(1L), anyBoolean(), eq(Duration.ofSeconds(3)), anyInt())).thenReturn(0L);
+		when(properties.queue())
+				.thenReturn(new TetraProperties.Queue(300, Duration.ofSeconds(3), 100, Duration.ofSeconds(1)));
+		when(cursorStore.advanceAndGet(eq(1L), anyBoolean(), eq(Duration.ofSeconds(3)), anyInt(), anyInt())).thenReturn(0L);
 		return new QueueCursorService(events, cursorStore, properties, Clock.fixed(now.atZone(KST).toInstant(), KST));
 	}
 
 	@Test
 	void 시작_전에는_증가하지_않도록_started_false로_부른다() {
-		assertThat(serviceAt(START.minusMinutes(1)).current(1L)).isZero();
-		verify(cursorStore).advanceAndGet(1L, false, Duration.ofSeconds(3), 300);
+		assertThat(serviceAt(START.minusMinutes(1)).current(1L, false)).isZero();
+		verify(cursorStore).advanceAndGet(1L, false, Duration.ofSeconds(3), 300, 100);
 	}
 
 	@Test
 	void 시작_정각부터_증가하도록_started_true로_부른다() {
-		serviceAt(START).current(1L);
-		verify(cursorStore).advanceAndGet(1L, true, Duration.ofSeconds(3), 300);
+		serviceAt(START).current(1L, false);
+		verify(cursorStore).advanceAndGet(1L, true, Duration.ofSeconds(3), 300, 100);
+	}
+
+	@Test
+	void 웜업_요청은_시작_뒤에도_증가_없이_부른다() {
+		serviceAt(START.plusMinutes(1)).current(1L, true);
+		verify(cursorStore).advanceAndGet(1L, false, Duration.ofSeconds(3), 300, 100);
 	}
 
 }

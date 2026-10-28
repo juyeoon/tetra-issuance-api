@@ -32,6 +32,7 @@ class TetraPropertiesTest {
 			"tetra.session.entry-open-grace=60s",
 			"tetra.queue.cursor-step=300",
 			"tetra.queue.cursor-window=3s",
+			"tetra.queue.cursor-slack=300",
 			"tetra.queue.cursor-cache-s-maxage=1s",
 			"tetra.jwt.user-id-max-length=128",
 			"tetra.jwt.clock-skew=5s",
@@ -57,6 +58,7 @@ class TetraPropertiesTest {
 			assertThat(p.session().cookieSecure()).isTrue();
 			assertThat(p.queue().cursorStep()).isEqualTo(300);
 			assertThat(p.queue().cursorWindow()).isEqualTo(Duration.ofSeconds(3));
+			assertThat(p.queue().cursorSlack()).isEqualTo(300);
 			assertThat(p.queue().cursorCacheSMaxage()).isEqualTo(Duration.ofSeconds(1));
 			assertThat(p.jwt().userIdMaxLength()).isEqualTo(128);
 			assertThat(p.stock().warmupMode()).isEqualTo(TetraProperties.WarmupMode.IF_ABSENT);
@@ -142,6 +144,14 @@ class TetraPropertiesTest {
 		runner.withPropertyValues("tetra.queue.cursor-window=500ms")
 				.run(context -> assertThat(context).hasFailed()
 						.getFailure().rootCause().hasMessageContaining("cursorWindow"));
+	}
+
+	@Test
+	void 커서_여유는_0까지_허용하고_음수면_기동_실패() {
+		runner.withPropertyValues("tetra.queue.cursor-slack=0").run(context -> assertThat(context).hasNotFailed());
+		runner.withPropertyValues("tetra.queue.cursor-slack=-1")
+				.run(context -> assertThat(context).hasFailed()
+						.getFailure().rootCause().hasMessageContaining("cursorSlack"));
 	}
 
 	@Test
