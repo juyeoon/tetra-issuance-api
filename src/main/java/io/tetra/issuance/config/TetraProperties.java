@@ -77,6 +77,8 @@ public record TetraProperties(
 	public record Queue(
 			@Positive int cursorStep,
 			@NotNull Duration cursorWindow,
+			/* 커서 상한 = 번호표 끝 + 이 값. 한산할 때 커서가 번호표보다 크게 앞서 가지 않게 (0 이면 번호표 끝까지만) */
+			@PositiveOrZero int cursorSlack,
 			@NotNull Duration cursorCacheSMaxage) {
 
 		@AssertTrue(message = "cursor-window 는 1초 이상이어야 합니다")

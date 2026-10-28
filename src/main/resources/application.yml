@@ -118,6 +118,7 @@ tetra:
   queue:
     cursor-step: ${values.queue.cursor-step}
     cursor-window: ${values.queue.cursor-window}
+    cursor-slack: ${values.queue.cursor-slack:300}   # values 에 없으면 step 과 같은 300
     cursor-cache-s-maxage: ${values.queue.cursor-cache-s-maxage}
   jwt:
     user-id-max-length: ${values.jwt.user-id-max-length}
