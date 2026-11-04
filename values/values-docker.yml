@@ -37,7 +37,7 @@ values:
     ttl: 2h
     cookie-secure: true
     # entry-open-before: 60m       # 입장 OPEN = 시작 − 60분 (event.json entryOpenAt 과 같은 규칙)  # TEST-LEAD 원래 값
-    entry-open-before: 5m        # TEST-LEAD 시험용 임시 (입장 OPEN = 시작 − 5분)
+    entry-open-before: 15m       # TEST-LEAD 시험용 임시 (입장 OPEN = 시작 − 15분)
     entry-open-grace: 60s        # 서버 허용 오차
 
   queue:
