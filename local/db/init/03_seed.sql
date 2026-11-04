@@ -33,7 +33,7 @@ INSERT INTO event (event_id, tenant_id, name, event_type, template_id, layout_co
 VALUES (1, @tenant_id, 'PoC 쿠폰 발급 이벤트', 'COUPON', 1,
         '{"title":{"h":"CENTER","v":"TOP"},"banner":{"h":"CENTER","v":"TOP"},"couponList":{"h":"CENTER","v":"MIDDLE"},"issueButton":{"h":"CENTER","v":"BOTTOM"},"theme":"WHITE"}',
         'assets/banners/1/banner.webp',
-        '2026-09-29 10:00:00', '2026-10-29 10:00:00', '2026-09-26 10:00:00', '2026-10-30 10:00:00',
+        '2026-09-29 10:00:00', '2030-12-31 10:00:00', '2026-09-26 10:00:00', '2030-12-31 11:00:00',
         '', 'L', 10, 'k7f2q9xa', '2026-09-20 10:00:00', 1, '2026-09-21 10:00:00',
         'APPROVED', 'HOSTING', 'OPEN');
 
