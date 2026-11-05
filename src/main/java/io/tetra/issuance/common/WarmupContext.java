@@ -1,5 +1,7 @@
 package io.tetra.issuance.common;
 
+import java.util.UUID;
+
 /**
  * 지금 스레드가 기동 웜업(StartupWarmup)이 보낸 요청을 처리 중인지 표시한다.
  * <p>
@@ -17,7 +19,13 @@ package io.tetra.issuance.common;
  */
 public final class WarmupContext {
 
-	public static final String KEY_PREFIX = "warmup:";
+	/**
+	 * 키 접두사 {@code warmup:<실행 ID>:} — 실행 ID 는 이 프로세스가 뜰 때 만든 임의 값.
+	 * 한 이벤트의 Pod 여러 개가 Redis 하나를 같이 쓰므로 Pod 마다 접두사가 달라야 한다 (2026-11-05 이벤트 23:
+	 * 접두사가 같아 먼저 끝난 Pod 가 다른 Pod 의 웜업 세션까지 지워 claim 401, 같은 웜업 사용자 claim 결과가 겹쳐 번호표 409).
+	 * 웜업이 끝나면 자기 실행 ID 키만 지운다.
+	 */
+	public static final String KEY_PREFIX = "warmup:" + UUID.randomUUID().toString().substring(0, 8) + ":";
 
 	private static final ThreadLocal<Boolean> ACTIVE = new ThreadLocal<>();
 
@@ -30,7 +38,7 @@ public final class WarmupContext {
 		return ACTIVE.get() != null;
 	}
 
-	/** 웜업 요청이면 {@code "warmup:"}, 아니면 빈 문자열 — Redis 키 이름 앞에 붙인다 */
+	/** 웜업 요청이면 {@link #KEY_PREFIX}, 아니면 빈 문자열 — Redis 키 이름 앞에 붙인다 */
 	public static String keyPrefix() {
 		return active() ? KEY_PREFIX : "";
 	}
