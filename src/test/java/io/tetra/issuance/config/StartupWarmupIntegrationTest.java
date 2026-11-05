@@ -81,6 +81,10 @@ class StartupWarmupIntegrationTest {
 	@Test
 	void 웜업은_실제_HTTP_경로를_돌고_warmup_키만_쓰고_지운다_실제_키_이력_지표는_그대로() {
 		redis.opsForValue().set(CouponStockStore.stockKey(1), "7");
+		// 같은 이벤트 Redis 를 쓰는 다른 Pod 의 웜업 키 — 이 Pod 의 정리가 지우면 안 된다 (이벤트 23 claim 401)
+		String otherPod = "warmup:otherpod:session:abc";
+		redis.opsForValue().set(otherPod, "1");
+		assertThat(StartupWarmup.PREFIX).startsWith("warmup:").isNotEqualTo("warmup:").doesNotStartWith("warmup:otherpod");
 		Map<String, String> realBefore = values(REAL_KEYS);
 		int sessions = redis.keys("session:*").size();
 		int claimDone = redis.keys("claim:done:*").size();
@@ -102,6 +106,8 @@ class StartupWarmupIntegrationTest {
 		assertThat(tomcatRequests() - tomcat).as("HTTP 가 실제 서버에 닿았다").isGreaterThanOrEqualTo(report.flows() * 3);
 
 		assertThat(redis.keys(StartupWarmup.PREFIX + "*")).isEmpty();
+		assertThat(redis.hasKey(otherPod)).as("다른 Pod 의 웜업 키는 그대로").isTrue();
+		redis.delete(otherPod);
 		assertThat(values(REAL_KEYS)).isEqualTo(realBefore);
 		assertThat(redis.keys("session:*")).hasSize(sessions);
 		assertThat(redis.keys("claim:done:*")).hasSize(claimDone);
