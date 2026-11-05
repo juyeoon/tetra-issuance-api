@@ -9,6 +9,7 @@ import org.springframework.stereotype.Service;
 
 import io.tetra.issuance.common.BusinessException;
 import io.tetra.issuance.common.ErrorCode;
+import io.tetra.issuance.common.WarmupContext;
 import io.tetra.issuance.config.TetraProperties;
 import io.tetra.issuance.filter.VerifiedEntryToken;
 import io.tetra.issuance.metrics.IssuanceMetrics;
@@ -48,7 +49,8 @@ public class SessionService {
 	/** @return 세션 ID (기존 세션 재사용이면 그 ID). 입장 OPEN 전이면 empty — 세션을 만들지 않는다 */
 	public Optional<String> enter(VerifiedEntryToken token) {
 		EventMeta event = events.find(token.eventId()).orElseThrow(() -> new BusinessException(ErrorCode.EVENT_NOT_FOUND));
-		if (!isEntryOpen(event, LocalDateTime.now(clock))) {
+		// 기동 웜업(WarmupContext)은 입장 OPEN 전에 돌므로 검사만 하고 넘는다 — 키는 warmup: 쪽에 쓰인다
+		if (!isEntryOpen(event, LocalDateTime.now(clock)) && !WarmupContext.active()) {
 			metrics.sessionBeforeOpen();
 			return Optional.empty();
 		}

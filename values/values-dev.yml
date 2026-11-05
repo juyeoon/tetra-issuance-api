@@ -33,6 +33,11 @@ values:
   # Tomcat keep-alive 유휴 시간 — ALB 유휴 시간(60초)보다 길게
   tomcat-keep-alive-timeout: 65s
 
+  # Tomcat 요청 스레드 — min-spare 를 최대값과 같게 두면 기동 때 200개를 미리 만들고 줄이지 않는다 (2026-11-05 웜업 보강)
+  # 기본(10)이면 이벤트 시작 1초 안에 수백 개를 새로 만든다. 스레드 스택은 쓰는 만큼만 메모리를 잡는다
+  tomcat-max-threads: 200
+  tomcat-min-spare-threads: 200
+
   session:
     redirect-url: /                 # 쿼리 없음 — 프런트는 event.json 에서 eventId 를 읽음 (MVP 계획 C20)
     cookie-name: TETRA_SID
@@ -66,5 +71,7 @@ values:
 
   # --- 기동 웜업 (A4) --------------------------------------------------------
   warmup:
-    iterations: 3000         # 핫 경로 반복 횟수 (0 = 끔)
-    max-duration: 25s          # 상한 — 넘으면 남은 반복을 건너뛰고 readiness 로 넘어간다 (WF 2-2: 20~30초)
+    # 2026-11-05 보강: 실제 HTTP 경로(입장 → 번호표 → 쿠폰 목록 → claim)를 동시에 돈다. 값 근거는 PLAN&DATA/웜업_보강_2026-11-05.md 3절
+    iterations: 12000        # 웜업 흐름 수 (0 = 끔) — 1코어 로컬 측정에서 처리 속도가 1만~1.2만 흐름부터 평평해짐
+    concurrency: 50          # 동시에 보내는 수 (처음 4개 → 흐름 5% 뒤 50개)
+    max-duration: 90s        # 상한 — 넘으면 남은 흐름을 건너뛰고 readiness 로 넘어간다. 실측(로그 "hit limit")으로 다시 맞춘다

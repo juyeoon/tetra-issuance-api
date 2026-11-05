@@ -2,6 +2,7 @@ package io.tetra.issuance.filter;
 
 import java.io.IOException;
 import java.security.Key;
+import java.security.interfaces.RSAPublicKey;
 import java.text.ParseException;
 import java.time.Clock;
 import java.time.Instant;
@@ -24,6 +25,7 @@ import com.nimbusds.jwt.proc.DefaultJWTProcessor;
 import io.tetra.issuance.common.BusinessException;
 import io.tetra.issuance.common.ErrorCode;
 import io.tetra.issuance.common.ErrorResponseWriter;
+import io.tetra.issuance.common.WarmupContext;
 import io.tetra.issuance.config.TetraProperties;
 import io.tetra.issuance.metrics.IssuanceMetrics;
 import io.tetra.issuance.service.EventMeta;
@@ -63,15 +65,17 @@ public class JwtAuthFilter extends OncePerRequestFilter {
 	private final Clock clock;
 	private final ErrorResponseWriter errorWriter;
 	private final IssuanceMetrics metrics;
+	private final WarmupKeys warmupKeys;
 	private final DefaultJWTProcessor<SecurityContext> processor = new DefaultJWTProcessor<>();
 
 	public JwtAuthFilter(EventMetaCache events, TetraProperties.Jwt config, Clock clock, ErrorResponseWriter errorWriter,
-			IssuanceMetrics metrics) {
+			IssuanceMetrics metrics, WarmupKeys warmupKeys) {
 		this.events = events;
 		this.config = config;
 		this.clock = clock;
 		this.errorWriter = errorWriter;
 		this.metrics = metrics;
+		this.warmupKeys = warmupKeys;
 		processor.setJWTClaimsSetAwareJWSKeySelector(this::selectVerificationKey);
 		// 클레임 검사는 아래 verifyClaims 에서 직접 한다 (에러 코드를 구분하고, 시각을 Clock 으로 통일하기 위해)
 		processor.setJWTClaimsSetVerifier((claims, context) -> {
@@ -125,6 +129,13 @@ public class JwtAuthFilter extends OncePerRequestFilter {
 			return List.of();
 		}
 		EventMeta event = findEvent(unverifiedClaims);
+		if (WarmupContext.active()) {
+			// 기동 웜업(WarmupContext = 웜업 값 + 루프백): 이 프로세스가 만든 임시 키로 검증 — 테넌트 개인키 없이 같은 RS256 검증 경로를 탄다.
+			// 임시 키는 웜업 동안만 있다(readiness 전에 닫힘) — 닫힌 뒤에는 빈 목록이라 서명 실패
+			keyVersion(header);
+			RSAPublicKey warmupKey = warmupKeys.publicKeyIfOpen();
+			return warmupKey == null ? List.of() : List.of(warmupKey);
+		}
 		if (!event.hasPublicKey()) {
 			log.warn("Entry token for event {} rejected: no public key registered", event.eventId());
 			throw new BusinessException(ErrorCode.EVENT_NOT_FOUND);

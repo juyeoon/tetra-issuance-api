@@ -52,6 +52,11 @@ public final class TestJwtFactory {
 		}
 	}
 
+	/** 주어진 키로 서명하는 발급기 (기동 웜업 임시 키 시험용) */
+	public static TestJwtFactory withKey(RSAKey rsaKey) {
+		return new TestJwtFactory(rsaKey);
+	}
+
 	/** event.public_key 에 저장하는 형식(PEM, SPKI). scripts/gen-test-keys.sh 가 만드는 것과 같은 형식. */
 	public String publicKeyPem() {
 		try {

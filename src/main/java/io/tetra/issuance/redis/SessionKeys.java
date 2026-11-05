@@ -4,6 +4,8 @@ import java.security.SecureRandom;
 import java.util.Base64;
 import java.util.regex.Pattern;
 
+import io.tetra.issuance.common.WarmupContext;
+
 /**
  * Redis 세션 키·필드 이름과 세션 ID 규칙 (D5). Lua 스크립트(M4·M6)도 같은 이름을 쓴다.
  *
@@ -34,12 +36,13 @@ public final class SessionKeys {
 	private SessionKeys() {
 	}
 
+	/** 기동 웜업 요청이면 앞에 warmup: (WarmupContext) — 아래 키 이름 메서드 모두 같다 */
 	public static String sessionKey(String sid) {
-		return "session:" + sid;
+		return WarmupContext.keyPrefix() + "session:" + sid;
 	}
 
 	public static String sessionIndexKey(long eventId, String userId) {
-		return "session:idx:" + eventId + ":" + userId;
+		return WarmupContext.keyPrefix() + "session:idx:" + eventId + ":" + userId;
 	}
 
 	/** 새 세션 ID (추측 불가능한 난수) */

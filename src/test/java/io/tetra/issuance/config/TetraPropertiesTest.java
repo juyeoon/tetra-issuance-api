@@ -40,6 +40,7 @@ class TetraPropertiesTest {
 			"tetra.jwt.test-private-key-path=../local-keys/test-jwt-private.pem",
 			"tetra.stock.warmup-mode=if-absent",
 			"tetra.warmup.iterations=100",
+			"tetra.warmup.concurrency=8",
 			"tetra.warmup.max-duration=25s" };
 
 	private final ApplicationContextRunner runner = new ApplicationContextRunner()

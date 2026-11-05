@@ -13,6 +13,7 @@ import org.springframework.stereotype.Service;
 
 import io.tetra.issuance.common.BusinessException;
 import io.tetra.issuance.common.ErrorCode;
+import io.tetra.issuance.common.WarmupContext;
 import io.tetra.issuance.domain.IssuanceHistory;
 import io.tetra.issuance.metrics.IssuanceMetrics;
 import io.tetra.issuance.redis.CouponStockStore;
@@ -68,7 +69,8 @@ public class ClaimService {
 	public ClaimResult claim(IssuanceSession session) {
 		EventMeta event = events.find(session.eventId())
 				.orElseThrow(() -> new BusinessException(ErrorCode.EVENT_NOT_FOUND));
-		if (event.hasEnded(LocalDateTime.now(clock))) {
+		boolean warmup = WarmupContext.active();
+		if (event.hasEnded(LocalDateTime.now(clock)) && !warmup) {
 			throw new BusinessException(ErrorCode.EVENT_ENDED);
 		}
 		if (!session.hasTicket()) {
@@ -80,7 +82,9 @@ public class ClaimService {
 		metrics.claim(outcome.success(), outcome.replay());
 
 		Result result = outcome.success() ? Result.SUCCESS : Result.SOLD_OUT;
-		recordHistory(session, result, decidedAt);
+		if (!warmup) { // 기동 웜업은 발급 이력(실제 데이터)을 쓰지 않는다
+			recordHistory(session, result, decidedAt);
+		}
 
 		List<IssuedCoupon> issued = outcome.success()
 				? coupons.stream().map(c -> new IssuedCoupon(c.couponId(), c.name(), c.description())).toList()
