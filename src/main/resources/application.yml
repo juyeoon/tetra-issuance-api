@@ -59,6 +59,9 @@ server:
     threads:
       max: ${values.tomcat-max-threads:200}
       min-spare: ${values.tomcat-min-spare-threads:10}
+    # 연결 대기열(listen backlog). 몰림 순간 ALB 가 Pod 당 수백 개 연결을 새로 열 때, GC 멈춤·처리 지연이 큰 Pod 에서
+    # 기본(100)이 넘쳐 SYN 이 버려지고 TCP 가 1초 뒤 재전송한다 (11-05 ①-3: ListenOverflows ≈ ALB 1초 대기). OS 상한은 somaxconn(Pod 4096)
+    accept-count: ${values.tomcat-accept-count:100}
     # Tomcat 스레드 풀 지표(tomcat_threads_busy_threads 등)를 /actuator/prometheus 로 내보내려면 필요 (기본 꺼짐)
     mbeanregistry:
       enabled: true

@@ -177,12 +177,37 @@ public class StartupWarmup implements ApplicationRunner {
 				.collect(Collectors.joining(", "));
 		ClientResources lettuce = lettuceResources.getIfAvailable();
 		log.info("Runtime: availableProcessors={}, gc=[{}], CICompilerCount={}, maxHeap={}MB, "
-				+ "tomcat threads max={} minSpare={}, lettuce io={} computation={}",
+				+ "tomcat threads max={} minSpare={} acceptCount={}, lettuce io={} computation={}",
 				rt.availableProcessors(), gc, vmOption("CICompilerCount"), rt.maxMemory() / (1024 * 1024),
 				environment.getProperty("server.tomcat.threads.max", "200"),
 				environment.getProperty("server.tomcat.threads.min-spare", "10"),
+				tomcatAcceptCount(),
 				lettuce == null ? "?" : lettuce.ioThreadPoolSize(),
 				lettuce == null ? "?" : lettuce.computationThreadPoolSize());
+	}
+
+	/**
+	 * 요청 포트(8080) Tomcat 커넥터가 실제로 쓰는 연결 대기열 — 설정값이 아니라 커넥터 값(JMX, server.tomcat.mbeanregistry 켜짐)을 읽어
+	 * 적용됐는지 확인한다. 읽지 못하면 설정값 뒤에 "(config)"
+	 */
+	private String tomcatAcceptCount() {
+		String port = environment.getProperty("local.server.port");
+		String why;
+		try {
+			var server = ManagementFactory.getPlatformMBeanServer();
+			var names = server.queryNames(new javax.management.ObjectName("*:type=ProtocolHandler,*"), null);
+			// 이름의 port 는 설정값이라 무작위 포트(0)면 "auto-1" 이 된다 — 실제로 연 포트(localPort)로 고른다
+			for (var name : names) {
+				if (port != null && port.equals(String.valueOf(server.getAttribute(name, "localPort")))) {
+					return String.valueOf(server.getAttribute(name, "acceptCount"));
+				}
+			}
+			why = "port " + port + " not in " + names;
+		}
+		catch (Exception e) {
+			why = e.toString();
+		}
+		return environment.getProperty("server.tomcat.accept-count", "100") + " (config: " + why + ")";
 	}
 
 	private static String vmOption(String name) {
