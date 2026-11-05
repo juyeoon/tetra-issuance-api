@@ -63,5 +63,6 @@ values:
 
   # --- 기동 웜업 (A4) --------------------------------------------------------
   warmup:
-    iterations: 1000         # 핫 경로 반복 횟수 (0 = 끔)
-    max-duration: 25s          # 상한 — 넘으면 남은 반복을 건너뛰고 readiness 로 넘어간다 (WF 2-2: 20~30초)
+    iterations: 1000         # 웜업 흐름(입장 → 번호표 → claim, 실제 HTTP) 수 (0 = 끔)
+    concurrency: 20          # 동시에 보내는 수
+    max-duration: 25s          # 상한 — 넘으면 남은 반복을 건너뛰고 readiness 로 넘어간다

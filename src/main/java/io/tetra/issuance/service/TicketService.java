@@ -7,6 +7,7 @@ import org.springframework.stereotype.Service;
 
 import io.tetra.issuance.common.BusinessException;
 import io.tetra.issuance.common.ErrorCode;
+import io.tetra.issuance.common.WarmupContext;
 import io.tetra.issuance.metrics.IssuanceMetrics;
 import io.tetra.issuance.redis.IssuanceSession;
 import io.tetra.issuance.redis.TicketStore;
@@ -33,11 +34,13 @@ public class TicketService {
 		EventMeta event = events.find(session.eventId())
 				.orElseThrow(() -> new BusinessException(ErrorCode.EVENT_NOT_FOUND));
 		// 시작 전·종료 후면 Redis 를 부르기 전에 거절. start_at·end_at 은 KST 저장, Clock 도 KST
+		// 기동 웜업(WarmupContext)은 시작 전에 돌므로 검사만 하고 넘는다 — 번호는 warmup: 키에서 나온다
 		LocalDateTime now = LocalDateTime.now(clock);
-		if (!event.hasStarted(now)) {
+		boolean warmup = WarmupContext.active();
+		if (!event.hasStarted(now) && !warmup) {
 			throw new BusinessException(ErrorCode.EVENT_NOT_STARTED);
 		}
-		if (event.hasEnded(now)) {
+		if (event.hasEnded(now) && !warmup) {
 			throw new BusinessException(ErrorCode.EVENT_ENDED);
 		}
 		TicketStore.IssueResult result = ticketStore.issue(session.sessionId(), session.eventId(), session.userId(),

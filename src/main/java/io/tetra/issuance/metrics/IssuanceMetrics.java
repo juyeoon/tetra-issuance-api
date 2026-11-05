@@ -9,6 +9,7 @@ import org.springframework.stereotype.Component;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.tetra.issuance.common.ErrorCode;
+import io.tetra.issuance.common.WarmupContext;
 
 /**
  * 발급 업무 카운터 (MVP 계획 A6). <b>이 Pod가 처리한 수</b>라서 여러 Pod 를 합칠 때는 {@code sum by (event_id)}.
@@ -72,35 +73,42 @@ public class IssuanceMetrics {
 	}
 
 	public void sessionCreated() {
-		sessionCreated.increment();
+		count(sessionCreated);
 	}
 
 	public void sessionReused() {
-		sessionReused.increment();
+		count(sessionReused);
 	}
 
 	public void sessionBeforeOpen() {
-		sessionBeforeOpen.increment();
+		count(sessionBeforeOpen);
 	}
 
 	public void ticketIssued() {
-		ticketIssued.increment();
+		count(ticketIssued);
 	}
 
 	public void ticketAlreadyClaimed() {
-		ticketAlreadyClaimed.increment();
+		count(ticketAlreadyClaimed);
 	}
 
 	public void ticketSessionGone() {
-		ticketSessionGone.increment();
+		count(ticketSessionGone);
 	}
 
 	public void claim(boolean success, boolean replay) {
-		(success ? (replay ? claimReplaySuccess : claimSuccess) : (replay ? claimReplaySoldOut : claimSoldOut)).increment();
+		count(success ? (replay ? claimReplaySuccess : claimSuccess) : (replay ? claimReplaySoldOut : claimSoldOut));
 	}
 
 	public void sessionRejected(ErrorCode code) {
-		sessionRejects.get(rejectReason(code)).increment();
+		count(sessionRejects.get(rejectReason(code)));
+	}
+
+	/** 기동 웜업 요청(WarmupContext)은 세지 않는다 — 대시보드·부하 시험 대조(k6 = 서버 = ALB)가 어긋나지 않게 */
+	private static void count(Counter counter) {
+		if (!WarmupContext.active()) {
+			counter.increment();
+		}
 	}
 
 	/** 에러 코드 → reason. user_id 길이·tenant_id 형식은 토큰 내용 형식 오류라 malformed */

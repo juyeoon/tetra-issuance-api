@@ -54,6 +54,11 @@ server:
     # ALB 가 재사용하려던 연결을 앱이 먼저 닫아 간헐적으로 502 가 난다 (Tomcat 기본은 60초)
     keep-alive-timeout: ${values.tomcat-keep-alive-timeout}
     use-relative-redirects: true
+    # 요청 스레드 수. min-spare 를 올리면 기동 웜업이 늘린 스레드가 쉬는 동안(60초 넘게) 줄지 않고 폭주 때까지 남는다 —
+    # 기본(10)이면 이벤트 시작 1초 안에 수백 개를 새로 만든다
+    threads:
+      max: ${values.tomcat-max-threads:200}
+      min-spare: ${values.tomcat-min-spare-threads:10}
     # Tomcat 스레드 풀 지표(tomcat_threads_busy_threads 등)를 /actuator/prometheus 로 내보내려면 필요 (기본 꺼짐)
     mbeanregistry:
       enabled: true
@@ -127,7 +132,8 @@ tetra:
     test-private-key-path: ${values.jwt.test-private-key-path}
   stock:
     warmup-mode: ${values.stock.warmup-mode}
-  # 기동 웜업 (A4): 트래픽을 받기 전에 커넥션·Lua·핫 경로를 데운다. iterations 0 이면 끔
+  # 기동 웜업 (A4): 트래픽을 받기 전에 커넥션·Lua·실제 HTTP 경로(입장·번호표·claim)를 데운다. iterations 0 이면 끔
   warmup:
     iterations: ${values.warmup.iterations}
+    concurrency: ${values.warmup.concurrency:8}
     max-duration: ${values.warmup.max-duration}

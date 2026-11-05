@@ -7,6 +7,8 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.RedisScript;
 import org.springframework.stereotype.Component;
 
+import io.tetra.issuance.common.WarmupContext;
+
 /**
  * 재고·claim Redis 키. 재고는 이벤트 단위 카운터 1개다(MVP 물리 ERD — event.stock_count).
  * <pre>
@@ -27,12 +29,13 @@ public class CouponStockStore {
 		this.couponClaimScript = couponClaimScript;
 	}
 
+	/** 기동 웜업 요청이면 앞에 warmup: (WarmupContext) — 아래 키 이름 메서드도 같다 */
 	public static String stockKey(long eventId) {
-		return "stock:" + eventId;
+		return WarmupContext.keyPrefix() + "stock:" + eventId;
 	}
 
 	public static String claimDoneKey(long eventId, String userId) {
-		return "claim:done:" + eventId + ":" + userId;
+		return WarmupContext.keyPrefix() + "claim:done:" + eventId + ":" + userId;
 	}
 
 	/** 재고 워밍업. ifAbsent=true 면 키가 없을 때만 채운다(재시작해도 차감분 유지). @return 실제로 값을 넣었는지 */

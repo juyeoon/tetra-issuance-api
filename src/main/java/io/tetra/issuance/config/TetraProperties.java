@@ -120,8 +120,11 @@ public record TetraProperties(
 	public record Stock(@NotNull WarmupMode warmupMode) {
 	}
 
-	/** 기동 웜업 (MVP 계획 A4). iterations 0 이면 웜업을 하지 않는다. */
-	public record Warmup(@PositiveOrZero int iterations, @NotNull Duration maxDuration) {
+	/**
+	 * 기동 웜업 (MVP 계획 A4). iterations = 웜업 사용자 흐름(번호표 + claim) 수, 0 이면 웜업을 하지 않는다.
+	 * concurrency = 동시에 보내는 수 — 폭주 때처럼 Tomcat 스레드·Redis 연결을 미리 늘리고 경합 경로까지 데운다.
+	 */
+	public record Warmup(@PositiveOrZero int iterations, @Positive int concurrency, @NotNull Duration maxDuration) {
 	}
 
 	/**

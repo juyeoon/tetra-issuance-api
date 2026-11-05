@@ -8,6 +8,8 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.RedisScript;
 import org.springframework.stereotype.Component;
 
+import io.tetra.issuance.common.WarmupContext;
+
 /**
  * 번호표 Redis 키.
  * <pre>
@@ -27,16 +29,17 @@ public class TicketStore {
 		this.ticketIssueScript = ticketIssueScript;
 	}
 
+	/** 기동 웜업 요청이면 앞에 warmup: (WarmupContext) — 아래 키 이름 메서드 모두 같다 */
 	public static String seqKey(long eventId) {
-		return "ticket:seq:" + eventId;
+		return WarmupContext.keyPrefix() + "ticket:seq:" + eventId;
 	}
 
 	public static String totalKey(long eventId) {
-		return "ticket:total:" + eventId;
+		return WarmupContext.keyPrefix() + "ticket:total:" + eventId;
 	}
 
 	public static String retryKey(long eventId) {
-		return "ticket:retry:" + eventId;
+		return WarmupContext.keyPrefix() + "ticket:retry:" + eventId;
 	}
 
 	/** 번호표 발급 결과. ISSUED 일 때만 number 가 의미 있다. */

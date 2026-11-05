@@ -65,7 +65,7 @@ class JwtAuthFilterTest {
 						2L, PemPublicKeys.parseRsa(reissued.publicKeyPem())))));
 
 		var filter = new JwtAuthFilter(events, CONFIG, Clock.fixed(NOW, ZoneId.of("Asia/Seoul")),
-				new ErrorResponseWriter(JsonMapper.builder().build()), new IssuanceMetrics(registry));
+				new ErrorResponseWriter(JsonMapper.builder().build()), new IssuanceMetrics(registry), new WarmupKeys());
 		mockMvc = MockMvcBuilders.standaloneSetup(new EchoController())
 				.addFilter(filter, JwtAuthFilter.PATH)
 				.build();

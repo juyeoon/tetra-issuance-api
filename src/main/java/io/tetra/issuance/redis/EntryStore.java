@@ -10,6 +10,8 @@ import org.springframework.data.redis.core.SessionCallback;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
 
+import io.tetra.issuance.common.WarmupContext;
+
 /**
  * 입장 단계의 Redis 키 (플랜 4-1).
  * <pre>
@@ -35,7 +37,7 @@ public class EntryStore {
 	 * exp 가 지나지 않은 짧은 시간 안의 재전송은 exp 검사만으로 못 막기 때문.
 	 */
 	public boolean markTokenUsed(String jti, Duration ttl) {
-		return Boolean.TRUE.equals(redis.opsForValue().setIfAbsent("jti:" + jti, "1", ttl));
+		return Boolean.TRUE.equals(redis.opsForValue().setIfAbsent(WarmupContext.keyPrefix() + "jti:" + jti, "1", ttl));
 	}
 
 	public static final DateTimeFormatter MINUTE = DateTimeFormatter.ofPattern("yyyyMMddHHmm");
@@ -44,20 +46,23 @@ public class EntryStore {
 		return entryMinuteKey(eventId, at.toLocalDateTime());
 	}
 
-	/** minute 은 KST 벽시계 시각 (초 이하는 형식에서 버려진다) */
+	/** minute 은 KST 벽시계 시각 (초 이하는 형식에서 버려진다). 기동 웜업 요청이면 앞에 warmup: (WarmupContext) — 이 클래스의 키 모두 같다 */
 	public static String entryMinuteKey(long eventId, LocalDateTime minute) {
-		return "entry:min:" + eventId + ":" + MINUTE.format(minute);
+		return WarmupContext.keyPrefix() + "entry:min:" + eventId + ":" + MINUTE.format(minute);
 	}
 
 	/** 신규 세션 1건 — 전체 진입 카운터와 그 분의 카운터를 한 번에(파이프라인) 올린다. at 은 KST 시각 */
 	public void incrementEntryCount(long eventId, ZonedDateTime at) {
+		// 파이프라인 콜백은 다른 스레드에서 돌 수 있으니 키 이름은 여기(요청 스레드)서 미리 만든다
+		String countKey = WarmupContext.keyPrefix() + "entry:count:" + eventId;
+		String minuteKey = entryMinuteKey(eventId, at);
 		redis.executePipelined(new SessionCallback<Object>() {
 			@Override
 			@SuppressWarnings("unchecked")
 			public Object execute(RedisOperations operations) {
 				RedisOperations<String, String> ops = operations;
-				ops.opsForValue().increment("entry:count:" + eventId);
-				ops.opsForValue().increment(entryMinuteKey(eventId, at));
+				ops.opsForValue().increment(countKey);
+				ops.opsForValue().increment(minuteKey);
 				return null;
 			}
 		});
