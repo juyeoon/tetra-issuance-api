@@ -13,6 +13,9 @@ import java.util.function.Function;
 import java.util.stream.Collectors;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.health.contributor.Status;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -39,7 +42,9 @@ import io.tetra.issuance.support.TestJwtFactory;
  * 실제 서버를 띄운다 (2026-11-05 웜업 보강).
  */
 @Import(TestcontainersConfiguration.class)
-@SpringBootTest(webEnvironment = WebEnvironment.RANDOM_PORT, properties = "management.server.port=0")
+@SpringBootTest(webEnvironment = WebEnvironment.RANDOM_PORT,
+		properties = { "management.server.port=0", "values.tomcat-accept-count=321" })
+@ExtendWith(OutputCaptureExtension.class)
 class StartupWarmupIntegrationTest {
 
 	/** 웜업이 건드리면 안 되는 실제 키 (시드 이벤트 1) */
@@ -125,6 +130,12 @@ class StartupWarmupIntegrationTest {
 
 		assertThat(warmupKeys.publicKeyIfOpen()).isNull();
 		assertThat(enter(warmupSigned.token().userId("warmup-closed").sign(), true)).as("웜업 뒤").isEqualTo(401);
+	}
+
+	@Test
+	void 기동_로그에_Tomcat_커넥터가_실제로_쓰는_연결_대기열이_찍힌다(CapturedOutput output) {
+		warmup.run(null);
+		assertThat(output.getOut()).contains("acceptCount=321,").doesNotContain("(config");
 	}
 
 	@Test
