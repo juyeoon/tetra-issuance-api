@@ -19,6 +19,8 @@ values:
     password: tetra            # 로컬 전용
     ssl-mode: PREFERRED        # local과 같음 (dev는 REQUIRED)
     pool-size: 5               # HikariCP 최대 커넥션 수 (Pod 1개당, B7 확정 2026-10-17)
+    connection-timeout: 3000   # ms. 기본 30초면 DB 장애 때 발급 요청이 스레드를 30초씩 붙잡음
+    validation-timeout: 1000   # ms. connection-timeout보다 작아야 함
 
   redis:
     host: valkey               # docker-compose 서비스 이름
