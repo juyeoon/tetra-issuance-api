@@ -19,6 +19,8 @@ import java.util.List;
 import java.util.Optional;
 
 import org.junit.jupiter.api.Test;
+import org.springframework.dao.DataAccessResourceFailureException;
+import org.springframework.transaction.CannotCreateTransactionException;
 
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 
@@ -76,6 +78,26 @@ class ClaimServiceTest {
 		ClaimService service = serviceAt(END);
 		assertThatThrownBy(() -> service.claim(NO_TICKET))
 				.extracting(e -> ((BusinessException) e).errorCode()).isEqualTo(ErrorCode.EVENT_ENDED);
+	}
+
+	@Test
+	void 커넥션을_못_얻어_이력_INSERT가_실패해도_발급_결과를_응답한다() {
+		ClaimService service = serviceAt(START);
+		when(historyRepository.save(any())).thenThrow(new CannotCreateTransactionException("Could not open JPA EntityManager for transaction"));
+		ClaimService.ClaimResult result = service.claim(WITH_TICKET);
+		assertThat(result.result()).isEqualTo(ClaimService.Result.SUCCESS);
+		assertThat(result.coupons()).hasSize(1);
+		verify(historyRepository).save(any());
+	}
+
+	@Test
+	void DB_접근_오류로_이력_INSERT가_실패해도_발급_결과를_응답한다() {
+		ClaimService service = serviceAt(START);
+		when(historyRepository.save(any())).thenThrow(new DataAccessResourceFailureException("Communications link failure"));
+		ClaimService.ClaimResult result = service.claim(WITH_TICKET);
+		assertThat(result.result()).isEqualTo(ClaimService.Result.SUCCESS);
+		assertThat(result.coupons()).hasSize(1);
+		verify(historyRepository).save(any());
 	}
 
 	@Test

@@ -10,6 +10,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataAccessException;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.TransactionException;
 
 import io.tetra.issuance.common.BusinessException;
 import io.tetra.issuance.common.ErrorCode;
@@ -105,7 +106,8 @@ public class ClaimService {
 			// (event_id, user_id) UNIQUE — 이미 기록됨. 평소엔 claim:done 이 먼저 막으므로 재시도·키 유실 때만 발생
 			log.info("Issuance history already recorded: event={} user={}", session.eventId(), session.userId());
 		}
-		catch (DataAccessException e) {
+		// 커넥션을 못 얻으면 트랜잭션 시작에서 CannotCreateTransactionException(TransactionException 계열) — DataAccessException 아님
+		catch (DataAccessException | TransactionException e) {
 			log.error("Issuance history INSERT failed (Redis already decided): event={} user={} result={}",
 					session.eventId(), session.userId(), result, e);
 		}

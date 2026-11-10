@@ -20,6 +20,8 @@ values:
     password: ""               # 비워 둠 → Secret 환경변수 VALUES_DB_PASSWORD 로 주입
     ssl-mode: REQUIRED         # 8.4 계정이 caching_sha2_password — TLS로 붙어야 allowPublicKeyRetrieval 없이 접속
     pool-size: 5               # 2026-10-17 확정(테스트 후, B7). 동시 이벤트 3 × maxReplicas × 5 ≤ max_connections(630) − 여유
+    connection-timeout: 3000   # ms. 기본 30초면 DB 장애 때 발급 요청이 스레드를 30초씩 붙잡음
+    validation-timeout: 1000   # ms. connection-timeout보다 작아야 함
 
   redis:
     host: redis                # 같은 Namespace 의 Service redis (StatefulSet valkey 7.2)
